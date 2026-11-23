@@ -1,0 +1,30 @@
+{
+  "name": "keyrouter",
+  "version": "1.0.0",
+  "description": "One OpenAI-compatible key for your agents, routed across many free and paid LLM providers. Runs on Cloudflare Workers.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "node test/run.mjs",
+    "test:vercel": "KR_TARGET=vercel node test/run.mjs && node test/vercel-multi.mjs"
+  },
+  "dependencies": {
+    "@vercel/functions": "^3"
+  },
+  "devDependencies": {
+    "wrangler": "^4"
+  },
+  "cloudflare": {
+    "bindings": {
+      "ADMIN_KEY": {
+        "description": "Password for your KeyRouter dashboard. Use a long random string, at least 16 characters, for example the output of `openssl rand -hex 24`. Save it in your password manager: it is the only way in."
+      }
+    }
+  }
+}

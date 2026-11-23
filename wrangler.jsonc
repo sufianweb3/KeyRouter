@@ -1,0 +1,13 @@
+{
+  "name": "keyrouter",
+  "main": "src/index.js",
+  "compatibility_date": "2026-11-15",
+  "durable_objects": { "bindings": [{ "name": "ROUTER", "class_name": "KeyRouter" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["KeyRouter"] }],
+  "rules": [{ "type": "Text", "globs": ["**/*.html", "**/*.txt"], "fallthrough": true }],
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true, "head_sampling_rate": 1 },
+    "traces": { "enabled": true, "head_sampling_rate": 0.1 }
+  }
+}

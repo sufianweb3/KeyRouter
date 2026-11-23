@@ -1,0 +1,16 @@
+node_modules
+.wrangler
+
+# secrets: never commit these
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+.env
+.env.*
+!.env.example
+.admin-key
+
+# test state
+test/.state
+test/test.env
+.vercel
