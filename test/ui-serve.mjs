@@ -46,7 +46,7 @@ http.createServer(async (req, res) => {
 }).listen(9901);
 
 fs.rmSync('test/.state', { recursive: true, force: true });
-fs.writeFileSync('test/test.env', 'ADMIN_KEY=admin-secret-123\n');
+fs.writeFileSync('test/test.env', 'ADMIN_KEY=admin-secret-123\nBENCH_OFF=1\n');
 const proc = spawn('npx', ['wrangler', 'dev', '--port', '9800', '--ip', '127.0.0.1', '--env-file', 'test/test.env', '--persist-to', 'test/.state'], { stdio: 'ignore', detached: true });
 process.on('SIGTERM', () => { try { process.kill(-proc.pid); } catch {} process.exit(0); });
 

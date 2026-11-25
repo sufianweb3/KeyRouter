@@ -19,8 +19,10 @@ KeyRouter runs on your own Cloudflare or Vercel account (the free plans are enou
 | **Daily capacity** | Shows how many free requests and tokens you have left today across providers. |
 | **Free credits** | Track sign-up credit (like 500K free tokens) so those paid models count as free until it is used up. |
 | **Keyless providers** | Some providers work with no key at all: one click to turn them on. |
+| **Real model scores** | Models are ranked by the public [LMArena](https://arena.ai/leaderboard) leaderboard (blind votes, with separate coding, math and hard-prompt boards), refreshed every 3 days. Models it does not list get an estimate, marked "Est.", and rank a little lower. |
+| **Provider logos** | Every provider shows its own logo, also ones you add later. Known brands use the LobeHub icon set; others use the icon from their own website. |
 
-Built-in presets include OpenRouter, Gemini, Groq, Cerebras, NVIDIA, Mistral, GitHub Models, SambaNova, Together, DeepSeek, Cohere, Hugging Face, Ollama Cloud and more. Any other OpenAI-compatible provider works by name and base URL.
+Built-in presets include OpenRouter, Gemini, Groq, Cerebras, NVIDIA, Mistral, GitHub Models, SambaNova, Together, DeepSeek, Cohere, Hugging Face, Ollama Cloud, Chutes, Requesty, AIML API, CrowLLM, Numes, TokenHarbor, Inferbase, Respan, Infron and more (44 in all). Any other OpenAI-compatible provider works by name and base URL. Paste the address with or without `/models` or `/chat/completions` on the end: KeyRouter keeps the part calls are built on.
 
 ## Cloudflare or Vercel?
 
@@ -140,12 +142,14 @@ Your providers, keys and settings are kept across updates.
 | You see | Do this |
 |---|---|
 | "ADMIN_KEY is not set" | Cloudflare: `npx wrangler secret put ADMIN_KEY`, or Settings > Variables and Secrets. Vercel: Settings > Environment Variables, then redeploy. |
-| "ADMIN_KEY is too short" | Set a longer one, 16+ characters. |
 | "No database connected" (Vercel) | Open your project's **Storage** tab, add Upstash Redis (free), connect it to the project, then redeploy. |
 | "Too many wrong admin keys" | Wait 10 minutes, then use the right key. |
 | A Vercel login page instead of the dashboard | You opened a preview URL. Use the production URL, `https://<project>.vercel.app`. |
 | A provider shows **Rate limited** | Nothing to do. KeyRouter retests it when the provider's limit resets. Your calls go to other providers meanwhile. |
-| A provider shows **Error** with "Key rejected" | The key is wrong or revoked. Paste a new one. |
+| A provider shows **Error** with "Key rejected" | The key is wrong or revoked, or the provider only accepts its own apps (AgentRouter says "unauthorized client"). The provider's own message is shown. |
+| A provider shows "No model list at this address (404)" | The base URL is wrong. It usually ends in `/v1`. |
+| A provider shows "Blocked by the provider's firewall" | The provider refuses requests from servers. Nothing KeyRouter can change; use another provider. |
+| Scores show "Est." everywhere | The LMArena data has not loaded yet. Models page > **Update scores**. |
 | A model you expected to be free shows as paid | The provider lists a price for it. If you have free credit there, set **Free tokens** under that provider's Settings. |
 
 ## How routing handles errors
@@ -178,6 +182,8 @@ python3 test/ui_check.py      # headless browser walkthrough (needs Playwright)
 | `src/http.js` | Serves the dashboard and passes API calls to the router |
 | `src/index.js` | Cloudflare entry: stores data in a Durable Object |
 | `api/index.js`, `src/redis-storage.js` | Vercel entry: stores data in Upstash Redis |
+| `src/bench.js` | Reads the LMArena leaderboard and matches model names |
+| `src/logos.js` | Finds a logo for each provider |
 | `src/ui/` | The dashboard |
 
 The tests create their own throwaway admin key and database. No real keys are needed.
@@ -185,3 +191,5 @@ The tests create their own throwaway admin key and database. No real keys are ne
 ## License
 
 [MIT](LICENSE)
+
+Model scores come from the [LMArena leaderboard](https://arena.ai/leaderboard) ([dataset](https://huggingface.co/datasets/lmarena-ai/leaderboard-dataset)). Provider logos come from [LobeHub Icons](https://github.com/lobehub/lobe-icons) (MIT) or the provider's own website, and belong to their owners.

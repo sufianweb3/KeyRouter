@@ -2,6 +2,8 @@
 // Provider keys never leave Cloudflare: the admin API only returns masks.
 import { PRESETS, DEFAULT_ROUTES, DEFAULT_SETTINGS } from './config.js';
 import { CATEGORIES, SMART_NAMES, MODES, analyze, taskScore, detectTask, isChatId } from './models.js';
+import { BENCH_SOURCE, BENCH_EVERY, fetchBench, makeLookup, benchScore, toScore } from './bench.js';
+import { resolveLogo } from './logos.js';
 
 export const json = (status, obj, extra) =>
   new Response(JSON.stringify(obj), { status, headers: Object.assign({ 'content-type': 'application/json' }, extra || {}) });
@@ -123,6 +125,50 @@ function capacityOf(list) {
 
 // No Authorization header for providers that need no key.
 const authOf = (k) => (k && k.key ? { authorization: 'Bearer ' + k.key } : {});
+// Some providers sit behind a firewall that refuses requests without a browser-like user agent.
+const UA = { 'user-agent': 'Mozilla/5.0 (compatible; KeyRouter/1.0; +https://github.com/sufianweb3/KeyRouter)' };
+const hdrs = (p, k, extra) => Object.assign({}, UA, extra || {}, authOf(k), p.headers || {});
+
+// Turn a failed /models answer into a message a person can act on.
+async function whyFailed(r) {
+  const text = (await r.text().catch(() => '')).slice(0, 2000);
+  const low = text.toLowerCase();
+  const html = /<html|<!doctype/.test(low);
+  if (r.status === 429) return { error: 'Rate limited (429), checking again later', limited: true };
+  if (r.status === 403 && html && /cloudflare|just a moment|attention required|access denied|captcha|cf-ray/.test(low))
+    return { error: "Blocked by the provider's firewall (403). Their site refuses server requests", perm: true };
+  if (r.status === 401 || r.status === 403) {
+    const msg = (() => {
+      try {
+        const j = JSON.parse(text);
+        const e = j.error || j;
+        return String((e && (e.message || e.msg || e.detail)) || j.message || '').slice(0, 120);
+      } catch {
+        return html ? '' : text.slice(0, 120);
+      }
+    })();
+    return { error: 'Key rejected (' + r.status + ')' + (msg ? ': ' + msg : ''), auth: true };
+  }
+  if (r.status === 404) return { error: 'No model list at this address (404). Check the base URL, it usually ends in /v1', perm: true };
+  return { error: 'Provider answered ' + r.status };
+}
+
+// People often paste the full endpoint. Keep the part every call is built on: ".../v1".
+function cleanBase(u) {
+  return String(u || '')
+    .trim()
+    .replace(/\/+$/, '')
+    .replace(/\/(chat\/completions|completions|models|responses|embeddings)$/i, '')
+    .replace(/\/+$/, '');
+}
+
+function hostOf(u) {
+  try {
+    return new URL(u).host;
+  } catch {
+    return '';
+  }
+}
 
 function validTz(tz) {
   try {
@@ -262,6 +308,30 @@ export class KeyRouter {
         for (const [n, p] of Object.entries(this.cfg.providers)) if (!PRESETS[n] && p.billing === 'free') p.billing = 'per-model';
         await ctx.storage.put({ providers: this.cfg.providers, mig: 1 });
       }
+      // Fix 2: providers saved before they became built-in presets kept "Auto pricing" even where the
+      // preset knows every model is free (Ollama Cloud, SambaNova). Use the preset unless you chose otherwise.
+      if (((await ctx.storage.get('mig')) || 0) < 2) {
+        for (const [n, p] of Object.entries(this.cfg.providers)) {
+          const pre = PRESETS[n];
+          if (pre && pre.billing === 'free' && p.billing === 'per-model' && !p.billingSet && p.baseUrl === pre.baseUrl) delete p.billing;
+        }
+        await ctx.storage.put({ providers: this.cfg.providers, mig: 2 });
+      }
+      // Fix 3: a base URL pasted with the endpoint on it (".../v1/models") made every call 404.
+      if (((await ctx.storage.get('mig')) || 0) < 3) {
+        let fixed = false;
+        for (const p of Object.values(this.cfg.providers)) {
+          const u = p.baseUrl && cleanBase(p.baseUrl);
+          if (u && u !== p.baseUrl) {
+            p.baseUrl = u;
+            fixed = true;
+          }
+        }
+        // Read the model lists again on the next alarm, so a fixed address shows its models right away.
+        await ctx.storage.put(fixed ? { providers: this.cfg.providers, mig: 3, alarmFull: 0 } : { mig: 3 });
+      }
+      this.bench = (await ctx.storage.get('bench')) || null;
+      this.benchLookup = makeLookup(this.bench);
       this.state = s.get('state') || {};
       this.usage = s.get('usage') || { days: {} };
       this.checks = s.get('checks') || {};
@@ -275,7 +345,7 @@ export class KeyRouter {
       this.cfg.alarmFull = missing.length ? 0 : (await ctx.storage.get('alarmFull')) || 0;
       const alarm = await ctx.storage.getAlarm();
       const untested = keyed.some((n) => !(this.checks[n] && this.checks[n].freeTest));
-      const soon = missing.length ? 2000 : untested ? 60000 : null;
+      const soon = missing.length || !this.cfg.alarmFull ? 2000 : untested ? 60000 : null;
       if (keyed.length && (alarm == null || (soon && alarm > Date.now() + soon))) await ctx.storage.setAlarm(Date.now() + (soon || CATALOG_EVERY));
     });
   }
@@ -361,6 +431,11 @@ export class KeyRouter {
   // ---------- model catalog ----------
   async alarm() {
     const now = Date.now();
+    if (this.benchDue()) {
+      await this.refreshBench();
+      await this.ctx.storage.setAlarm(Date.now() + 2000);
+      return;
+    }
     const due = this.cfg.alarmFull == null || now >= this.cfg.alarmFull;
     if (due) {
       await this.refreshCatalog(Object.keys(this.providers));
@@ -368,6 +443,12 @@ export class KeyRouter {
       await this.ctx.storage.put('acct', this.acct);
       this.cfg.alarmFull = now + CATALOG_EVERY;
       await this.ctx.storage.put('alarmFull', this.cfg.alarmFull);
+    }
+    // Keys whose last check failed for a passing reason (rate limit, timeout, server error) get checked again.
+    for (const n of this.keyRetry()) {
+      for (const k of this.cfg.providers[n].keys) await this.checkKey(n, k);
+      if (!this.catalog[n] || !this.catalog[n].models.length) await this.refreshCatalog([n]);
+      await this.ctx.storage.put('checks', this.checks);
     }
     // Self-heal: test free models nobody has tested yet, and retry failed tests after a while.
     for (const n of this.needsTest()) {
@@ -378,9 +459,64 @@ export class KeyRouter {
     await this.ctx.storage.setAlarm(Math.max(next, Date.now() + 1000));
   }
 
+  // ---------- benchmarks ----------
+  benchDue() {
+    if (this.env.BENCH_OFF) return false;
+    const b = this.bench;
+    const tried = this.benchTried || 0;
+    return (!b || Date.now() - b.at > BENCH_EVERY) && Date.now() - tried > 6 * HOUR;
+  }
+
+  async refreshBench() {
+    this.benchTried = Date.now();
+    try {
+      const b = await fetchBench(this.env.BENCH_URL);
+      this.bench = b;
+      this.benchErr = null;
+      this.benchLookup = makeLookup(b);
+      await this.ctx.storage.put('bench', b);
+      log({ message: 'benchmarks refreshed', models: b.n, published: b.published });
+    } catch (e) {
+      this.benchErr = String(e.message || e).slice(0, 200);
+      log({ message: 'benchmarks failed', error: this.benchErr });
+    }
+  }
+
+  benchInfo() {
+    const b = this.bench;
+    return { source: BENCH_SOURCE, published: b ? b.published : null, at: b ? b.at : null, models: b ? b.n : 0, error: this.benchErr || null };
+  }
+
+  // How strong a model is for a task. Your own score wins, then the LMArena leaderboard, then an estimate.
+  // Estimates rank a little lower, so a model with real results is preferred over a guess of the same size.
+  strength(name, m, task, needTools) {
+    const ov = this.cfg.overrides[name + '/' + m.id] || {};
+    if (ov.score != null) return { score: taskScore(Object.assign({}, m, { score: ov.score }), task, needTools), src: 'custom' };
+    const hit = this.benchLookup(m.id);
+    if (hit) {
+      let sc = benchScore(hit.row, task);
+      if (needTools && m.tools === true) sc += 2;
+      return { score: sc, src: 'lmarena', exact: hit.exact, key: hit.key, rating: hit.row[0] };
+    }
+    return { score: taskScore(m, task, needTools) - (this.bench ? 6 : 0), src: 'estimate' };
+  }
+
+  keyRetry() {
+    const out = [];
+    for (const n of Object.keys(this.providers)) {
+      const ks = Object.values((this.checks[n] && this.checks[n].keys) || {});
+      if (ks.length && ks.every((x) => !x.ok && !x.auth && !x.perm && Date.now() - x.at > 30 * 60000)) out.push(n);
+    }
+    return out.slice(0, 5);
+  }
+
   // Earliest time a rate-limited free test may run again.
   nextRetest() {
     let t = Infinity;
+    for (const n of Object.keys(this.providers)) {
+      const ks = Object.values((this.checks[n] && this.checks[n].keys) || {});
+      if (ks.length && ks.every((x) => !x.ok && !x.auth && !x.perm)) t = Math.min(t, Math.max(...ks.map((x) => x.at)) + 30 * 60000);
+    }
     for (const n of Object.keys(this.providers)) {
       const ft = this.checks[n] && this.checks[n].freeTest;
       if (ft && !ft.ok && ft.limited) t = Math.min(t, ft.retryAt || ft.at + 5 * 60000);
@@ -441,8 +577,8 @@ export class KeyRouter {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 15000);
     try {
-      const r = await fetch(p.baseUrl + '/models', { headers: Object.assign(authOf(k), p.headers || {}), signal: ctrl.signal });
-      if (!r.ok) throw new Error('provider answered ' + r.status + ' for /models');
+      const r = await fetch(p.baseUrl + '/models', { headers: hdrs(p, k), signal: ctrl.signal });
+      if (!r.ok) throw new Error((await whyFailed(r)).error);
       const j = await r.json();
       return Array.isArray(j.data) ? j.data : Array.isArray(j) ? j : Array.isArray(j.models) ? j.models : [];
     } finally {
@@ -462,6 +598,14 @@ export class KeyRouter {
         const all = raw.map((x) => analyze(x, billing, !!PRESETS[name] && !keyless));
         const models = all.filter((m) => m.chat && (!keyless || m.free)).slice(0, 1500);
         this.catalog[name] = { at: Date.now(), error: null, total: all.length, models, v: CATALOG_V };
+        // The list came back with this key, so an older failed check of it (a 429, a timeout) no longer stands.
+        const ch0 = this.checks[name] || (this.checks[name] = { keys: {} });
+        ch0.keys = ch0.keys || {};
+        const k0 = p.keys[0];
+        if (!ch0.keys[k0.id] || !ch0.keys[k0.id].ok) {
+          ch0.keys[k0.id] = { ok: true, at: Date.now() };
+          await this.ctx.storage.put('checks', this.checks);
+        }
         // A past free test on a model that turns out to be paid is no longer true.
         const ft = this.checks[name] && this.checks[name].freeTest;
         if (ft && ft.model && !models.some((m) => m.id === ft.model && this.freeOf(name, m))) {
@@ -547,8 +691,8 @@ export class KeyRouter {
     let res;
     try {
       this.noteCall(name, k);
-      const r = await fetch(p.baseUrl + '/models', { headers: Object.assign(authOf(k), p.headers || {}), signal: ctrl.signal });
-      res = r.ok ? { ok: true } : { ok: false, error: r.status === 401 || r.status === 403 ? 'Key rejected (' + r.status + ')' : 'Provider answered ' + r.status };
+      const r = await fetch(p.baseUrl + '/models', { headers: hdrs(p, k), signal: ctrl.signal });
+      res = r.ok ? { ok: true } : Object.assign({ ok: false }, await whyFailed(r));
       if (r.ok) {
         const j = await r.json().catch(() => null);
         if (j) this.lastList = { name, id: k.id, at: Date.now(), list: Array.isArray(j.data) ? j.data : Array.isArray(j) ? j : Array.isArray(j.models) ? j.models : [] };
@@ -622,7 +766,7 @@ export class KeyRouter {
         const body = { model: m.id, messages: [{ role: 'user', content: 'Reply with the word OK.' }], max_tokens: 128 };
         const r = await fetch(p.baseUrl + '/chat/completions', {
           method: 'POST',
-          headers: Object.assign({ 'content-type': 'application/json' }, authOf(k), p.headers || {}),
+          headers: hdrs(p, k, { 'content-type': 'application/json' }),
           body: JSON.stringify(body),
           signal: ctrl.signal,
         });
@@ -663,6 +807,9 @@ export class KeyRouter {
     const ft = this.checks[name] && this.checks[name].freeTest;
     if (!(ft && ft.ok && Date.now() - ft.at < 12 * HOUR)) await this.testFree(name);
     await this.ctx.storage.put({ checks: this.checks, acct: this.acct });
+    const ch = this.checks[name] || {};
+    const cat = this.catalog[name] || {};
+    log({ message: 'provider checked', provider: name, host: hostOf(p.baseUrl), keys: Object.values(ch.keys || {}).map((x) => (x.ok ? 'ok' : x.error)), models: (cat.models || []).length, catalogError: cat.error || null, freeTest: ch.freeTest ? (ch.freeTest.ok ? 'ok' : ch.freeTest.error || 'failed') : null });
     await this.wake(this.nextRetest());
   }
 
@@ -685,13 +832,13 @@ export class KeyRouter {
         if (m.ctx && det.tokens && det.tokens > m.ctx * 0.9) continue;
         const isFree = this.freeOf(name, m);
         if (!isFree && (mode === 'free' || !paidOk)) continue;
-        const base = ov.score != null ? Object.assign({}, m, { score: ov.score }) : m;
+        const st = this.strength(name, m, task, det.needTools);
         const hh = health[key];
         const penalty = hh ? (20 * hh.fail) / (hh.ok + hh.fail + 3) : 0;
         // A model close to its rate or daily limit slides down, so traffic moves to a near-equal model
         // before the provider starts refusing. Free quota lasts longer and fewer calls fail.
         const pr = this.pressure(name, m.id);
-        out.push({ provider: name, model: m.id, free: isFree, rank: Math.round((taskScore(base, task, det.needTools) - penalty - 15 * pr * pr) * 10) / 10 });
+        out.push({ provider: name, model: m.id, free: isFree, rank: Math.round((st.score - penalty - 15 * pr * pr) * 10) / 10, src: st.src });
       }
     }
     out.sort((a, b) => {
@@ -1048,7 +1195,7 @@ export class KeyRouter {
       try {
         r = await fetch(c.p.baseUrl + endpoint, {
           method: 'POST',
-          headers: Object.assign({ 'content-type': 'application/json' }, authOf(c.k), c.p.headers || {}),
+          headers: hdrs(c.p, c.k, { 'content-type': 'application/json' }),
           body: JSON.stringify(Object.assign({}, body, c.t.params || {}, { model: c.t.model }, isGemini(c.t.provider, c.p) ? { messages: addGeminiSignatures(body.messages) } : {})),
           signal: ctrl.signal,
         });
@@ -1252,13 +1399,15 @@ export class KeyRouter {
         const key = name + '/' + m.id;
         const ov = this.cfg.overrides[key] || {};
         const hh = health[key];
-        models.push({ provider: name, id: m.id, free: this.freeOf(name, m), credit: !m.free && this.freeOf(name, m), ctx: m.ctx, tools: m.tools, cats: m.cats, base: m.score, score: ov.score != null ? ov.score : m.score, custom: ov.score != null, off: !!ov.off, usable, ok: hh ? hh.ok : 0, fail: hh ? hh.fail : 0 });
+        const hit = this.benchLookup(m.id);
+        const base = hit ? toScore(hit.row[0]) : m.score;
+        models.push({ provider: name, id: m.id, free: this.freeOf(name, m), credit: !m.free && this.freeOf(name, m), ctx: m.ctx, tools: m.tools, cats: m.cats, base, score: ov.score != null ? ov.score : base, custom: ov.score != null, src: ov.score != null ? 'custom' : hit ? 'lmarena' : 'estimate', arena: hit ? { rating: hit.row[0], coding: hit.row[1], math: hit.row[2], hard: hit.row[3], long: hit.row[4], vision: hit.row[5], as: hit.key, exact: hit.exact } : null, off: !!ov.off, usable, ok: hh ? hh.ok : 0, fail: hh ? hh.fail : 0 });
       }
     }
     const mode = this.cfg.settings.mode;
     const top = {};
     for (const cat of CATEGORIES) top[cat] = this.smartTargets(cat, mode, null, health).slice(0, 6);
-    return { providers, models, top, mode, paidDailyCap: this.cfg.settings.paidDailyCap || 0, paidToday: this.paidBucket().dayCount };
+    return { providers, models, top, mode, bench: this.benchInfo(), paidDailyCap: this.cfg.settings.paidDailyCap || 0, paidToday: this.paidBucket().dayCount };
   }
 
   // Everything the dashboard needs in one call.
@@ -1356,7 +1505,10 @@ export class KeyRouter {
         const checked = keys.filter((k) => k.check);
         const allBad = checked.length && checked.length === keys.length && checked.every((k) => !k.check.ok);
         const blocked = keys.every((k) => k.blockedFor > 0);
-        if (allBad) {
+        if (allBad && checked.every((k) => k.check.limited)) {
+          status = 'limited';
+          statusText = checked[0].check.error;
+        } else if (allBad) {
           status = 'error';
           statusText = checked[0].check.error;
         } else if (cat && cat.error && !chatModels.length) {
@@ -1491,9 +1643,11 @@ export class KeyRouter {
     const f = this.fails.get(ip);
     if (f && f.n >= 10 && Date.now() - f.t < 600000) return json(429, { error: { message: 'Too many wrong admin keys. Wait 10 minutes.' } });
     const tok = bearer(request);
-    // A short admin key can be guessed: refuse to run with one.
-    if (this.env.ADMIN_KEY && String(this.env.ADMIN_KEY).length < 16)
-      return json(401, { error: { message: 'ADMIN_KEY is too short. Set one with at least 16 characters (openssl rand -hex 24).' } });
+    // A short admin key can be guessed. Older installs may have one, so warn in the logs instead of locking them out.
+    if (this.env.ADMIN_KEY && String(this.env.ADMIN_KEY).length < 16 && !this.warnedShort) {
+      this.warnedShort = true;
+      log({ message: 'ADMIN_KEY is shorter than 16 characters. Replace it with: openssl rand -hex 24' });
+    }
     const ok = !!this.env.ADMIN_KEY && !!tok && (await safeEqual(tok, this.env.ADMIN_KEY));
     if (!ok) {
       const g = f && Date.now() - f.t < 600000 ? f : { n: 0, t: Date.now() };
@@ -1532,6 +1686,40 @@ export class KeyRouter {
       return json(200, this.dashboard());
     }
 
+    if (a === 'benchmarks' && b === 'refresh' && m === 'POST') {
+      await this.refreshBench();
+      if (!this.bench) throw new Error(this.benchErr || 'Could not load benchmark data');
+      return json(200, this.catalogView());
+    }
+
+    // Logos for the dashboard, cached for 30 days (7 when none was found). A few new ones per call.
+    if (a === 'logos' && m === 'POST') {
+      const items = Array.isArray(body.items) ? body.items.slice(0, 80) : [];
+      const out = {};
+      const pending = [];
+      let fresh = 0;
+      for (const it of items) {
+        const name = String((it && it.name) || '').toLowerCase().slice(0, 40);
+        const base = String((it && it.baseUrl) || '').slice(0, 300);
+        if (!name) continue;
+        const key = 'logo:' + name + '|' + base;
+        const hit = await this.ctx.storage.get(key);
+        if (hit && Date.now() - hit.at < (hit.url ? 30 : 7) * 86400000) {
+          out[name] = hit.url;
+          continue;
+        }
+        if (fresh >= 4) {
+          pending.push(name);
+          continue;
+        }
+        fresh++;
+        const url = await resolveLogo(name, base, this.env.LOGO_FETCH);
+        await this.ctx.storage.put(key, { at: Date.now(), url });
+        out[name] = url;
+      }
+      return json(200, { logos: out, pending });
+    }
+
     if (a === 'catalog' && b === 'refresh' && m === 'POST') {
       const names = body.provider ? [body.provider] : Object.keys(this.providers);
       await this.refreshCatalog(names);
@@ -1562,7 +1750,7 @@ export class KeyRouter {
       if (!NAME_RE.test(b)) throw new Error('Provider name: lowercase letters, digits, - or _ (max 32)');
       if (m === 'PUT' && !c) {
         const cur = P[b] || { keys: [] };
-        const baseUrl = String(body.baseUrl != null ? body.baseUrl : cur.baseUrl || '').trim().replace(/\/+$/, '');
+        const baseUrl = cleanBase(body.baseUrl != null ? body.baseUrl : cur.baseUrl || '');
         if (!/^https?:\/\/\S+$/.test(baseUrl)) throw new Error('Base URL must start with https://');
         const next = { baseUrl, keys: cur.keys, enabled: 'enabled' in body ? !!body.enabled : cur.enabled !== false };
         next.limits = 'limits' in body ? cleanLimits(body.limits) : cur.limits;
@@ -1577,6 +1765,8 @@ export class KeyRouter {
         next.quotaScope = qs === 'model' ? 'model' : 'key';
         const bl = 'billing' in body ? body.billing : cur.billing || (PRESETS[b] && PRESETS[b].billing) || 'per-model';
         next.billing = ['free', 'paid', 'per-model'].includes(bl) ? bl : 'per-model';
+        // Remember a pricing choice made by hand, so a later preset update never overrides it.
+        if (cur.billingSet || ('billing' in body && P[b] && next.billing !== this.billingOf(b))) next.billingSet = true;
         const tz = String(('resetTz' in body ? body.resetTz : cur.resetTz) || 'UTC').trim();
         if (!validTz(tz)) throw new Error('Unknown timezone: ' + tz);
         next.resetTz = tz;

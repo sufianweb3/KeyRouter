@@ -18,6 +18,7 @@ const MODELS = {
   'SH-key-xxxx': [{ id: 'hdr-model' }],
   'TK-key-xxxx': [{ id: 'tk-model' }],
   'TQ-key-xxxx': [{ id: 'q-model' }],
+  'BT-key-xxxx': [{ id: 'vendor/model-alpha-2:free' }, { id: 'model-beta-1-instruct:free' }, { id: 'mystery-9b:free' }],
   'RQ-key-xxxx': [{ id: 'q-model' }],
   'FB-key-xxxx': [{ id: 'locked', pricing: { prompt: '0', completion: '0' } }, { id: 'open', pricing: { prompt: '0', completion: '0' } }],
   'CR-key-xxxx': [{ id: 'pro-model', pricing: { prompt: '0.00001', completion: '0.00003' } }],
@@ -51,9 +52,25 @@ const mock = http.createServer(async (req, res) => {
     res.writeHead(s, { 'content-type': 'application/json', ...h });
     res.end(JSON.stringify(o));
   };
+  // A small LMArena leaderboard, shaped like the Hugging Face datasets-server /filter answer.
+  if (req.method === 'GET' && req.url.startsWith('/filter?')) {
+    const q = new URL(req.url, 'http://x').searchParams;
+    const cat = (q.get('where').match(/'([a-z_]+)'/) || [])[1];
+    const off = Number(q.get('offset'));
+    const board = { overall: { 'Model Alpha 2 (High)': 1480, 'Model Beta 1': 1300 }, coding: { 'Model Alpha 2 (High)': 1400, 'Model Beta 1': 1560 }, math: { 'Model Alpha 2 (High)': 1450 }, hard_prompts: { 'Model Alpha 2 (High)': 1460 } };
+    const rows = [];
+    if (q.get('config') === 'text_style_control' && board[cat]) {
+      for (const [n, r] of Object.entries(board[cat])) rows.push({ model_name: n, rating: r, category: cat, leaderboard_publish_date: '2026-11-22' });
+      if (cat === 'overall') for (let i = 0; i < 30; i++) rows.push({ model_name: 'Filler Model ' + i, rating: 1000 + i, category: cat, leaderboard_publish_date: '2026-11-22' });
+    }
+    const page = rows.slice(off, off + 100).map((row, i) => ({ row_idx: off + i, row }));
+    return j(200, { rows: page, num_rows_total: rows.length });
+  }
   if (req.method === 'GET' && req.url.endsWith('/models')) {
     const k = (req.headers.authorization || '').slice(7);
     if (k === 'BAD-key-xxxx') return j(401, { error: { message: 'invalid api key' } });
+    if (k === 'RL-key-xxxx') return j(429, { error: { message: 'Too many requests' } });
+    if (k === 'NF-key-xxxx') return j(404, { error: 'not found' });
     return j(200, { data: MODELS[k] || [] });
   }
   let b = '';
@@ -110,7 +127,8 @@ const mock = http.createServer(async (req, res) => {
 await new Promise((r) => mock.listen(9901, r));
 
 fs.rmSync('test/.state', { recursive: true, force: true });
-fs.writeFileSync('test/test.env', 'ADMIN_KEY=admin-secret-123\n');
+fs.writeFileSync('test/test.env', 'ADMIN_KEY=admin-secret-123\nBENCH_URL=http://127.0.0.1:9901\n');
+process.env.BENCH_URL = 'http://127.0.0.1:9901';
 // KR_TARGET=vercel runs the same checks against the Vercel entry point (api/index.js) with a local Redis stand-in.
 const VERCEL = process.env.KR_TARGET === 'vercel';
 const cmd = VERCEL ? ['node', ['test/vercel-serve.mjs', '9800']] : ['npx', ['wrangler', 'dev', '--port', '9800', '--ip', '127.0.0.1', '--env-file', 'test/test.env', '--persist-to', 'test/.state']];
@@ -398,7 +416,7 @@ try {
   dash = (await admin('GET', 'dashboard')).body;
   const badp = dash.providers.find((x) => x.name === 'bad');
   assert.equal(badp.status, 'error');
-  assert.equal(badp.keys[0].check.error, 'Key rejected (401)');
+  assert.match(badp.keys[0].check.error, /^Key rejected \(401\)/);
   const tkp = dash.providers.find((x) => x.name === 'tk');
   assert.equal(tkp.status, 'ready', JSON.stringify(tkp));
   assert.equal(tkp.freeTest.model, 'tk-model');
@@ -622,6 +640,48 @@ try {
     assert.ok(cap.usedKnown <= cap.limit && cap.usedKnown + cap.left === cap.limit, JSON.stringify(cap));
   }
   step('capacity: used and left add up to the limit');
+
+  // scores come from the LMArena leaderboard; models it does not list are estimates and rank lower
+  {
+    await admin('PUT', 'providers/bt', { baseUrl: base, billing: 'free' });
+    await admin('POST', 'providers/bt/keys', { key: 'BT-key-xxxx', label: '' });
+    const cv = (await admin('POST', 'benchmarks/refresh', {})).body;
+    assert.equal(cv.bench.published, '2026-11-22', JSON.stringify(cv.bench));
+    const row = (id) => cv.models.find((m) => m.provider === 'bt' && m.id === id);
+    assert.equal(row('vendor/model-alpha-2:free').src, 'lmarena');
+    assert.equal(row('vendor/model-alpha-2:free').arena.rating, 1480);
+    assert.equal(row('model-beta-1-instruct:free').src, 'lmarena');
+    assert.equal(row('mystery-9b:free').src, 'estimate');
+    const a = row('vendor/model-alpha-2:free');
+    const b = row('model-beta-1-instruct:free');
+    assert.ok(a.score > b.score, 'overall: alpha above beta ' + a.score + ' ' + b.score);
+    assert.ok(b.arena.coding > a.arena.coding, 'coding board: beta above alpha');
+    assert.ok(row('mystery-9b:free').score < b.score, 'estimate ranks below listed models');
+    await admin('DELETE', 'providers/bt');
+  }
+  step('model scores come from the LMArena leaderboard, per task, estimates marked');
+
+  // a 429 while checking a key is a rate limit, not a broken key; a 404 points at the base URL
+  {
+    await admin('PUT', 'providers/rl', { baseUrl: base, billing: 'per-model' });
+    await admin('POST', 'providers/rl/keys', { key: 'RL-key-xxxx', label: '' });
+    await admin('PUT', 'providers/nf', { baseUrl: base, billing: 'per-model' });
+    await admin('POST', 'providers/nf/keys', { key: 'NF-key-xxxx', label: '' });
+    const d = (await admin('GET', 'dashboard')).body;
+    const rl = d.providers.find((p) => p.name === 'rl');
+    const nf = d.providers.find((p) => p.name === 'nf');
+    assert.equal(rl.status, 'limited', JSON.stringify([rl.status, rl.statusText]));
+    assert.equal(nf.status, 'error');
+    assert.match(nf.statusText, /base URL/);
+    const lg = (await admin('POST', 'logos', { items: [{ name: 'nf', baseUrl: 'http://127.0.0.1:9901/v1' }] })).body;
+    assert.ok('nf' in lg.logos && Array.isArray(lg.pending), JSON.stringify(lg));
+    // a base URL pasted with the endpoint on it is cut back to the part calls are built on
+    await admin('PUT', 'providers/cu', { baseUrl: base + '/models/', billing: 'free' });
+    const cu = (await admin('GET', 'dashboard')).body.providers.find((p) => p.name === 'cu');
+    assert.equal(cu.baseUrl, base);
+    for (const n of ['rl', 'nf', 'cu']) await admin('DELETE', 'providers/' + n);
+  }
+  step('429 on a key check shows as rate limited; 404 explains the base URL; logos endpoint');
 
   // brute force lockout on admin key
   for (let i = 0; i < 10; i++) await admin('GET', 'config', null, 'guess' + i);

@@ -70,6 +70,8 @@
     sun: ['M12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8z', 'M12 2v2', 'M12 20v2', 'M4.9 4.9l1.4 1.4', 'M17.7 17.7l1.4 1.4', 'M2 12h2', 'M20 12h2', 'M4.9 19.1l1.4-1.4', 'M17.7 6.3l1.4-1.4'],
     moon: ['M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z'],
     search: ['M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z', 'M21 21l-4.3-4.3'],
+    panel: ['M4 4h16v16H4z', 'M9.5 4v16', 'M15 10l-2 2 2 2'],
+    panelOpen: ['M4 4h16v16H4z', 'M9.5 4v16', 'M13 10l2 2-2 2'],
     info: ['M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z', 'M12 11v5', 'M12 8h.01']
   };
   var SVGNS = 'http://www.w3.org/2000/svg';
@@ -91,6 +93,8 @@
   }
 
   // ---------- theme: follows the system until you pick one ----------
+  var MINI = false;
+  try { MINI = localStorage.getItem('kr_side') === 'mini'; } catch (e) { MINI = false; }
   var THEME = null;
   try { THEME = localStorage.getItem('kr_theme'); } catch (e) { THEME = null; }
   function applyTheme() {
@@ -133,6 +137,56 @@
       });
     })(kids);
     return el;
+  }
+
+  // ---------- provider logos ----------
+  // Fetched by the router (brand icon or the provider's own site icon), cached here for a week.
+  var LOGOS = {};
+  var LOGO_TTL = 7 * 86400000;
+  try {
+    var lc = JSON.parse(localStorage.getItem('kr_logos') || 'null');
+    if (lc && lc.v === 1 && Date.now() - lc.at < LOGO_TTL) LOGOS = lc.map || {};
+  } catch (e) { LOGOS = {}; }
+  var LOGO_WANT = {};
+  var LOGO_TIMER = null;
+  var LOGO_BUSY = false;
+  function logoBase(n) {
+    var p = CFG && CFG.providers[n];
+    if (p && p.baseUrl) return p.baseUrl;
+    var pre = CFG && CFG.presets[n];
+    return pre ? pre.baseUrl : '';
+  }
+  function fillLogo(el, n) {
+    var u = LOGOS[n];
+    el.classList.toggle('img', !!u);
+    if (u) el.replaceChildren(h('img', { src: u, alt: '', draggable: 'false' }));
+    else el.replaceChildren(String(n).slice(0, 2));
+  }
+  function plogo(n, cls) {
+    var el = h('span', { class: 'plogo ' + (cls || ''), 'data-logo': n, 'aria-hidden': 'true' });
+    fillLogo(el, n);
+    if (!(n in LOGOS)) {
+      LOGO_WANT[n] = logoBase(n);
+      if (!LOGO_TIMER) LOGO_TIMER = setTimeout(loadLogos, 60);
+    }
+    return el;
+  }
+  function loadLogos() {
+    LOGO_TIMER = null;
+    if (LOGO_BUSY || !KEY) return;
+    var items = Object.keys(LOGO_WANT).slice(0, 80).map(function (n) { return { name: n, baseUrl: LOGO_WANT[n] }; });
+    if (!items.length) return;
+    LOGO_BUSY = true;
+    api('POST', 'logos', { items: items }).then(function (r) {
+      LOGO_BUSY = false;
+      Object.keys(r.logos).forEach(function (n) { LOGOS[n] = r.logos[n]; delete LOGO_WANT[n]; });
+      try { localStorage.setItem('kr_logos', JSON.stringify({ v: 1, at: Date.now(), map: LOGOS })); } catch (e) { /* storage full */ }
+      document.querySelectorAll('[data-logo]').forEach(function (el) {
+        var n = el.getAttribute('data-logo');
+        if (n in r.logos) fillLogo(el, n);
+      });
+      if (Object.keys(LOGO_WANT).length) LOGO_TIMER = setTimeout(loadLogos, 250);
+    }, function () { LOGO_BUSY = false; LOGO_WANT = {}; });
   }
 
   // ---------- formatting ----------
@@ -523,21 +577,32 @@
     if (DD_CLOSE) DD_CLOSE();
     if (!PAGES.some(function (p) { return p[0] === PAGE; })) PAGE = 'overview';
     var main = h('main', { class: 'main' });
-    var themeB = h('button', { type: 'button', class: 'nav-btn', 'data-theme-label': '1', 'aria-label': 'Switch light or dark mode', onclick: function () { toggleTheme(); syncTheme(); } });
-    app.replaceChildren(h('div', { class: 'shell' },
+    var themeB = h('button', { type: 'button', class: 'nav-btn', 'data-theme-label': '1', 'data-tip': 'Light or dark mode', 'aria-label': 'Switch light or dark mode', onclick: function () { toggleTheme(); syncTheme(); } });
+    var shell = h('div', { class: 'shell' + (MINI ? ' mini' : '') });
+    var foldB = h('button', { type: 'button', class: 'side-fold', 'aria-label': MINI ? 'Expand sidebar' : 'Collapse sidebar', 'aria-expanded': String(!MINI), 'data-tip': MINI ? 'Expand' : null, onclick: function () {
+      MINI = !MINI;
+      try { localStorage.setItem('kr_side', MINI ? 'mini' : 'full'); } catch (e) { /* private mode */ }
+      shell.classList.toggle('mini', MINI);
+      foldB.setAttribute('aria-label', MINI ? 'Expand sidebar' : 'Collapse sidebar');
+      foldB.setAttribute('aria-expanded', String(!MINI));
+      if (MINI) foldB.setAttribute('data-tip', 'Expand'); else foldB.removeAttribute('data-tip');
+      foldB.replaceChildren(icon(MINI ? 'panelOpen' : 'panel'));
+    } }, icon(MINI ? 'panelOpen' : 'panel'));
+    shell.append(
       h('nav', { class: 'side', 'aria-label': 'Main' },
-        h('div', { class: 'brand' }, h('div', { class: 'logo' }, icon('layers')), 'KeyRouter'),
+        h('div', { class: 'brand' }, h('div', { class: 'logo' }, icon('layers')), h('span', { class: 'brand-name' }, 'KeyRouter'), foldB),
         PAGES.map(function (p) {
-          return h('button', { type: 'button', class: 'nav-btn' + (PAGE === p[0] ? ' on' : ''), 'aria-current': PAGE === p[0] ? 'page' : null, 'aria-label': p[1], title: p[1], onclick: function () { go(p[0]); } }, icon(p[2]), h('span', null, p[1]));
+          return h('button', { type: 'button', class: 'nav-btn' + (PAGE === p[0] ? ' on' : ''), 'aria-current': PAGE === p[0] ? 'page' : null, 'aria-label': p[1], 'data-tip': p[1], onclick: function () { go(p[0]); } }, icon(p[2]), h('span', null, p[1]));
         }),
         h('div', { class: 'grow' }),
         h('div', { class: 'side-foot' },
-          h('div', { class: 'side-mode' }, 'Routing', h('b', null, MODE_LABEL[CFG.settings.mode])),
+          h('div', { class: 'side-mode', title: 'Routing: ' + MODE_LABEL[CFG.settings.mode] }, h('span', { class: 'mode-dot ' + CFG.settings.mode }), h('span', { class: 'mode-txt' }, 'Routing', h('b', null, MODE_LABEL[CFG.settings.mode]))),
           themeB,
-          h('button', { type: 'button', class: 'nav-btn', onclick: function () { logout(); } }, icon('logout'), h('span', null, 'Lock')))),
+          h('button', { type: 'button', class: 'nav-btn', 'data-tip': 'Lock', 'aria-label': 'Lock', onclick: function () { logout(); } }, icon('logout'), h('span', null, 'Lock')))),
       h('div', null,
         h('div', { class: 'mtop' }, h('div', { class: 'logo' }, icon('layers')), 'KeyRouter', h('span', { class: 'sp' }), themeFab(), iconBtn('logout', 'Lock', function () { logout(); }, 'ghost')),
-        main)));
+        main));
+    app.replaceChildren(shell);
     syncTheme();
     var view = { overview: viewOverview, providers: viewProviders, models: viewModels, usage: viewUsage, keys: viewKeys, playground: viewPlayground, settings: viewSettings }[PAGE];
     view(main);
@@ -599,7 +664,7 @@
             h('div', { class: 'card-head' }, h('h3', null, 'Provider health'), btn('Manage', function () { go('providers'); }, 'soft sm')),
             h('div', { class: 'list' }, keyed.map(function (p) {
               return h('button', { type: 'button', class: 'li', onclick: function () { go('providers'); } },
-                h('div', { class: 'avatar' }, p.name.slice(0, 2)),
+                plogo(p.name),
                 h('div', { style: { minWidth: '0' } }, h('div', { class: 't', style: { textTransform: 'capitalize' } }, p.name), h('div', { class: 's' }, p.statusText)),
                 h('div', { class: 'r' }, pill(p.status)));
             }))),
@@ -650,7 +715,7 @@
       rows.length ? h('div', { class: 'cap-rows' }, rows.map(function (r) {
         var hit = r.used >= r.limit;
         return h('div', { class: 'cap-row' },
-          h('span', { class: 'n' }, r.name),
+          h('span', { class: 'n with-logo' }, plogo(r.name, 'xs'), r.name),
           h('div', { class: 'track sm ' + capTone(r.used, r.limit), title: fmt(r.used) + ' of ' + fmt(r.limit) + ' used' }, h('i', { style: { width: Math.min(100, Math.max(r.used ? 2 : 0, (r.used / r.limit) * 100)) + '%' } })),
           hit ? h('span', { class: 'v hit' }, 'Limit hit') : h('span', { class: 'v num' }, fmt(r.limit - r.used) + ' left'));
       })) : null);
@@ -762,7 +827,7 @@
   function connectCard() {
     var auto = false;
     var bill = 'per-model';
-    var keyIn = h('input', { type: 'password', name: 'provider-key', placeholder: 'Paste an API key', autocomplete: 'off', spellcheck: 'false', 'aria-label': 'API key',
+    var keyIn = h('input', { type: 'password', name: 'provider-key', placeholder: 'Paste an API key', autocomplete: 'new-password', 'data-1p-ignore': 'true', 'data-lpignore': 'true', 'data-bwignore': 'true', spellcheck: 'false', 'aria-label': 'API key',
       oninput: onKey, onkeydown: function (e) { if (e.key === 'Enter') connect(); } });
     var nameIn = h('input', { type: 'text', name: 'custom-name', placeholder: 'Pick or type a name', autocomplete: 'off', spellcheck: 'false', role: 'combobox',
       'aria-autocomplete': 'list', 'aria-expanded': 'false', 'aria-label': 'Provider',
@@ -848,7 +913,7 @@
       var on = o.name === typed();
       return h('div', { class: 'dd-opt' + (on ? ' on' : '') + (o.isNew ? ' newopt' : ''), role: 'option', 'aria-selected': String(on),
         onmousedown: function (e) { e.preventDefault(); }, onmousemove: function () { if (active !== i) setActive(i); }, onclick: function () { pick(o.name); } },
-        h('span', { class: 'opt-name' }, o.isNew ? h('span', null, icon('plus'), 'Add "' + o.name + '"') : o.name),
+        h('span', { class: 'opt-name' }, o.isNew ? h('span', null, icon('plus'), 'Add "' + o.name + '"') : h('span', { class: 'opt-brand' }, plogo(o.name, 'xs'), o.name)),
         h('span', { class: 'opt-tags' }, tags));
     }
     function setActive(i) {
@@ -994,7 +1059,7 @@
   }
 
   function providerCard(p) {
-    var keyIn = h('input', { type: 'password', placeholder: 'Paste another ' + cap(p.name) + ' key', autocomplete: 'off', 'aria-label': 'Another API key for ' + p.name, onkeydown: function (e) { if (e.key === 'Enter') addKey(); } });
+    var keyIn = h('input', { type: 'password', name: 'provider-key-' + p.name, placeholder: 'Paste another ' + cap(p.name) + ' key', autocomplete: 'new-password', 'data-1p-ignore': 'true', 'data-lpignore': 'true', 'data-bwignore': 'true', 'aria-label': 'Another API key for ' + p.name, onkeydown: function (e) { if (e.key === 'Enter') addKey(); } });
     var addB = btn('Add key', addKey, 'soft', 'plus');
     function addKey() {
       if (!keyIn.value.trim()) { keyIn.focus(); return; }
@@ -1055,7 +1120,7 @@
       head.setAttribute('aria-expanded', String(o));
       if (o) EXPANDED[p.name] = true; else delete EXPANDED[p.name];
     } },
-      h('div', { class: 'avatar dark' }, p.name.slice(0, 2)),
+      plogo(p.name),
       h('div', { class: 'ttl' }, h('h3', null, p.name), h('div', { class: 'url', title: p.baseUrl }, p.baseUrl.replace(/^https?:\/\//, '') + ' · models updated ' + ago(p.catalogAt))),
       h('div', { class: 'pmini' },
         h('span', { class: 'tag free' }, fmt(p.free) + ' free'),
@@ -1220,16 +1285,20 @@
         }).sort(function (a, b) { return b.score - a.score; });
         tbody.replaceChildren.apply(tbody, rows.slice(0, 300).map(function (m) {
           var key = m.provider + '/' + m.id;
-          var score = h('input', { type: 'number', min: '0', max: '100', value: String(m.score), 'aria-label': 'Score for ' + m.id, onchange: function () {
+          var src = m.src === 'lmarena'
+            ? h('span', { class: 'src arena', title: 'LMArena rating ' + m.arena.rating + (m.arena.coding ? ', coding ' + m.arena.coding : '') + (m.arena.math ? ', math ' + m.arena.math : '') + (m.arena.exact ? '' : ' (matched as ' + m.arena.as + ')') }, 'LMArena')
+            : m.src === 'custom' ? h('span', { class: 'src mine', title: 'Your own score' }, 'Yours')
+            : h('span', { class: 'src est', title: 'Not on the LMArena leaderboard. Estimated from the model family and size, and ranked a little lower.' }, 'Est.');
+          var score = h('input', { type: 'number', min: '0', max: '100', value: String(Math.round(m.score)), 'aria-label': 'Score for ' + m.id, onchange: function () {
             api('PUT', 'overrides', { key: key, score: score.value === '' ? null : Number(score.value) }).then(function (nc) { CAT = nc; toast('Score saved'); draw(false); }, fail);
           } });
           return h('tr', null,
-            h('td', null, h('div', { class: 'mono', style: { fontWeight: '600' } }, m.id), h('div', { class: 'hint' }, cap(m.provider))),
+            h('td', null, h('div', { class: 'row nowrap', style: { gap: '10px' } }, plogo(m.provider, 'sm'), h('div', { style: { minWidth: '0' } }, h('div', { class: 'mono', style: { fontWeight: '600' } }, m.id), h('div', { class: 'hint' }, cap(m.provider))))),
             h('td', null, h('span', { class: 'tag ' + (m.credit ? 'credit' : m.free ? 'free' : 'paidt'), title: m.credit ? 'Paid model, free while the token allowance lasts' : null }, m.credit ? 'Credit' : m.free ? 'Free' : 'Paid')),
             h('td', null, m.cats.filter(function (x) { return x !== 'general'; }).map(function (x) { return h('span', { class: 'tag' }, x); })),
             h('td', { class: 'n' }, m.ctx ? fmt(m.ctx) : h('span', { class: 'faint' }, '-')),
             h('td', { class: 'n' }, m.ok || m.fail ? h('span', null, fmt(m.ok), h('span', { class: 'faint' }, ' / ' + fmt(m.fail))) : h('span', { class: 'faint' }, '0')),
-            h('td', null, h('div', { class: 'row nowrap', style: { gap: '6px' } }, score, m.custom ? btn('Reset', function () { api('PUT', 'overrides', { key: key, score: null }).then(function (nc) { CAT = nc; draw(false); }, fail); }, 'sm soft') : null)),
+            h('td', null, h('div', { class: 'row nowrap', style: { gap: '6px' } }, score, src, m.custom ? btn('Reset', function () { api('PUT', 'overrides', { key: key, score: null }).then(function (nc) { CAT = nc; draw(false); }, fail); }, 'sm soft') : null)),
             h('td', null, sw(!m.off, function (on) { api('PUT', 'overrides', { key: key, off: !on }).then(function (nc) { CAT = nc; toast(on ? 'Model on' : 'Model off: never used'); }, fail); }, 'Use ' + m.id)));
         }));
         if (!rows.length) tbody.append(h('tr', null, h('td', { colspan: '7', class: 'empty' }, 'No models match.')));
@@ -1244,7 +1313,7 @@
           h('section', { class: 'card' },
             h('div', { class: 'card-head' }, h('div', null, h('h3', null, 'Free models by provider'), h('div', { class: 'sub' }, 'Includes paid models covered by a free token allowance'))),
             free.length ? h('div', { class: 'share cols' }, free.sort(function (a, b) { return b[1] - a[1]; }).map(function (x) {
-              return h('div', { class: 'share-row' }, h('div', { class: 'top-line' }, h('b', null, x[0]), h('span', { class: 'muted num' }, plural(x[1], 'model'))),
+              return h('div', { class: 'share-row' }, h('div', { class: 'top-line' }, h('b', { class: 'with-logo' }, plogo(x[0], 'xs'), x[0]), h('span', { class: 'muted num' }, plural(x[1], 'model'))),
                 h('div', { class: 'track lime' }, h('i', { style: { width: Math.max(3, (x[1] / freeN) * 100) + '%' } })));
             })) : h('div', { class: 'empty' }, 'No free models yet. Connect a provider.'))),
         h('section', { class: 'card mt' },
@@ -1255,10 +1324,11 @@
               h('div', { class: 'pick-title' }, TASK_LABEL[cat] || cat),
               list.length ? h('div', { class: 'stack', style: { gap: '10px' } }, list.slice(0, 4).map(function (t, i) {
                 return h('div', { class: 'row nowrap', style: { gap: '10px' } }, h('span', { class: 'rank' + (i ? '' : ' first') }, i + 1),
-                  h('span', { class: 'mono', style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: '1' } }, t.model),
+                  h('span', { class: 'mono', style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: '1' }, title: t.src === 'estimate' ? 'Estimated score, not on the LMArena leaderboard' : null }, t.model, t.src === 'estimate' ? h('span', { class: 'faint' }, ' est.') : null),
                   h('span', { class: 'tag ' + (t.free ? 'free' : 'paidt') }, t.provider));
               })) : h('div', { class: 'hint' }, 'No model for this yet'));
           }))),
+        benchBar(c),
         h('section', { class: 'card mt' },
           h('div', { class: 'row', style: { marginBottom: '16px', gap: '12px' } },
             seg([['free', 'Free', freeN], ['paid', 'Paid', paidN], ['all', 'All']], filt.bill, function (v) { filt.bill = v; table(); }, 'Price'),
@@ -1268,6 +1338,23 @@
           h('div', { class: 'tbl-wrap' }, h('table', null,
             h('thead', null, h('tr', null, h('th', null, 'Model'), h('th', null, 'Price'), h('th', null, 'Good at'), h('th', { class: 'n' }, 'Context'), h('th', { class: 'n' }, 'Worked / failed'), h('th', null, 'Score'), h('th', null, 'Use'))),
             tbody))));
+    }
+    function benchBar(c) {
+      var b = c.bench || {};
+      var arena = c.models.filter(function (m) { return m.usable && m.src === 'lmarena'; }).length;
+      var all = c.models.filter(function (m) { return m.usable; }).length;
+      var upd = btn('Update scores', function () {
+        busy(upd, 'Loading LMArena', api('POST', 'benchmarks/refresh', {})).then(function (nc) { CAT = nc; draw(false); toast('Scores updated from LMArena'); }, fail);
+      }, 'soft sm', 'refresh');
+      return h('section', { class: 'card mt bench' },
+        h('span', { class: 'bench-ic' }, icon('chart')),
+        h('div', { class: 'bench-txt' },
+          h('b', null, b.published ? 'Scores from the LMArena leaderboard, ' + dayLabel(b.published) : 'Scores are estimates until the LMArena leaderboard loads'),
+          h('div', { class: 'hint' }, b.published
+            ? fmt(arena) + ' of ' + fmt(all) + ' models are on the leaderboard: blind side-by-side votes from millions of people, with separate coding, math and hard-prompt scores. The rest use an estimate. Refreshed every 3 days.'
+            : (b.error ? 'Last try: ' + b.error + '. ' : '') + 'KeyRouter reads the public LMArena dataset; it usually loads within a few minutes of setup.')),
+        h('a', { class: 'bench-link', href: b.source ? b.source.url : 'https://arena.ai/leaderboard', target: '_blank', rel: 'noopener noreferrer' }, 'arena.ai', icon('arrow')),
+        upd);
     }
     api('GET', 'catalog').then(function (c) { CAT = c; draw(true); }, function (e) { if (e.message !== 'unauthorized') body.replaceChildren(h('div', { class: 'card empty err' }, e.message)); });
   }

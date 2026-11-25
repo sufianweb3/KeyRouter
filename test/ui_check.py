@@ -94,8 +94,8 @@ with sync_playwright() as p:
     # the provider list filters as you type and offers a new name
     pg.fill("input[name=custom-name]", "gro")
     pg.wait_for_selector(".combo-menu.on .dd-opt:has-text('groq')")
-    pg.fill("input[name=custom-name]", "chutes")
-    pg.wait_for_selector(".combo-menu.on .dd-opt:has-text('Add \"chutes\"')")
+    pg.fill("input[name=custom-name]", "zenmux")
+    pg.wait_for_selector(".combo-menu.on .dd-opt:has-text('Add \"zenmux\"')")
     pg.keyboard.press("Escape")
     pg.wait_for_selector(".combo-menu", state="detached")
     # unknown key: Connect waits for the base URL, pricing shows for a new provider
@@ -108,10 +108,10 @@ with sync_playwright() as p:
     assert w > 200, w
     pg.screenshot(path=OUT + "-2b-connect.png")
     pg.click(".card:has-text('Connect a provider') button:has-text('Connect')")
-    pg.wait_for_selector(".pcard:has(h3:has-text('chutes')) .pill.ready", timeout=30000)
-    pg.wait_for_selector(".toast:has-text('Chutes')")
+    pg.wait_for_selector(".pcard:has(h3:has-text('zenmux')) .pill.ready", timeout=30000)
+    pg.wait_for_selector(".toast:has-text('Zenmux')")
     # check now
-    assert "open" in pg.locator(".pcard", has=pg.locator("h3", has_text="chutes")).get_attribute("class")
+    assert "open" in pg.locator(".pcard", has=pg.locator("h3", has_text="zenmux")).get_attribute("class")
     # free token allowance: paid models count as free, meter shown
     cl = openp("creditapi")
     clt = cl.inner_text()
@@ -139,9 +139,9 @@ with sync_playwright() as p:
     assert at.input_value() == "2,000,000", at.input_value()
     at.fill("")
     at.type("500000")
-    chu = pg.inner_text(".pcard:has(h3:has-text('chutes'))")
+    chu = pg.inner_text(".pcard:has(h3:has-text('zenmux'))")
     assert "Free model answered" in chu and "big-pickle" in chu and "1 free" in chu and "2 paid" in chu, chu
-    pg.locator(".pcard", has=pg.locator("h3", has_text="chutes")).locator("text=Check now").click()
+    pg.locator(".pcard", has=pg.locator("h3", has_text="zenmux")).locator("text=Check now").click()
     pg.wait_for_selector(".toast:has-text('free model')")
 
     # remove uses our own confirm popup; cancel keeps the key
@@ -252,6 +252,44 @@ with sync_playwright() as p:
     assert pg.get_attribute("html", "data-theme") == "light"
     # native parts (scrollbars, pickers) follow the chosen theme, not the system one
     assert pg.evaluate("getComputedStyle(document.documentElement).colorScheme") == "light"
+
+    # models page: benchmark source bar and a source tag on every score
+    pg.click(".side >> .nav-btn[data-tip='Models']")
+    pg.wait_for_selector(".card.bench")
+    assert "LMArena" in pg.inner_text(".card.bench")
+    assert pg.locator("td .src").count() > 0
+    # provider logos: initials or an image, never empty
+    pg.click(".side >> .nav-btn >> nth=0")
+    pg.wait_for_selector(".plogo")
+    assert all(len(t) or pg.locator(".plogo.img").count() for t in pg.locator(".plogo").all_inner_texts())
+    # collapsible sidebar: narrow rail, round buttons, remembered after reload
+    pg.click(".side-fold")
+    pg.wait_for_timeout(450)
+    sw = pg.eval_on_selector(".side", "e => e.getBoundingClientRect().width")
+    assert sw < 100, sw
+    nb = pg.eval_on_selector(".side .nav-btn", "e => [e.getBoundingClientRect().width, e.getBoundingClientRect().height]")
+    assert abs(nb[0] - nb[1]) < 1, nb
+    pg.hover(".side .nav-btn >> nth=1")
+    pg.wait_for_timeout(250)
+    pg.screenshot(path=OUT + "-13-mini.png")
+    pg.click(".side >> .nav-btn[data-tip='Models']")
+    pg.wait_for_selector(".card.bench")
+    pg.wait_for_timeout(900)
+    pg.screenshot(path=OUT + "-14-mini-models.png", full_page=True)
+    pg.click(".side >> .nav-btn[data-tip='Providers']")
+    pg.wait_for_selector(".pcard")
+    pg.wait_for_timeout(1500)
+    pg.screenshot(path=OUT + "-15-mini-providers.png", full_page=True)
+    pg.click(".side >> .nav-btn >> nth=0")
+    pg.reload()
+    pg.wait_for_selector(".shell.mini")
+    pg.click(".side-fold")
+    pg.wait_for_timeout(450)
+    assert pg.eval_on_selector(".side", "e => e.getBoundingClientRect().width") > 200
+    # provider key boxes must not get the saved admin key autofilled
+    pg.click(".side >> .nav-btn[data-tip='Providers']")
+    pg.wait_for_selector("input[name=provider-key]")
+    assert pg.get_attribute("input[name=provider-key]", "autocomplete") == "new-password"
 
     # mobile width still usable
     pg.set_viewport_size({"width": 420, "height": 900})
