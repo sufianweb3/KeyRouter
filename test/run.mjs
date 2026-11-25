@@ -19,6 +19,8 @@ const MODELS = {
   'TK-key-xxxx': [{ id: 'tk-model' }],
   'TQ-key-xxxx': [{ id: 'q-model' }],
   'BT-key-xxxx': [{ id: 'vendor/model-alpha-2:free' }, { id: 'model-beta-1-instruct:free' }, { id: 'mystery-9b:free' }],
+  'DM-key-xxxx': [{ id: 'dm-hinted' }, { id: 'dm-other' }],
+  'LP-key-xxxx': [{ id: 'lp-special' }, { id: 'lp-plain' }],
   'RQ-key-xxxx': [{ id: 'q-model' }],
   'FB-key-xxxx': [{ id: 'locked', pricing: { prompt: '0', completion: '0' } }, { id: 'open', pricing: { prompt: '0', completion: '0' } }],
   'CR-key-xxxx': [{ id: 'pro-model', pricing: { prompt: '0.00001', completion: '0.00003' } }],
@@ -66,6 +68,30 @@ const mock = http.createServer(async (req, res) => {
     const page = rows.slice(off, off + 100).map((row, i) => ({ row_idx: off + i, row }));
     return j(200, { rows: page, num_rows_total: rows.length });
   }
+  // Provider directory (shaped like the freellm.net files), OpenRouter benchmarks and a docs page.
+  if (req.method === 'GET' && req.url === '/dir/status.json')
+    return j(200, { catalog_updated_at: '2026-11-25', providers: [
+      { provider: 'DirMock', slug: 'dirmock', status: 'Operational', free_models_count: 3, max_context: 131072, verified_protocols: ['OpenAI Chat Completions'], tagline: 'Mock free tier.', base_url: 'https://api.dirmock.example/v1', api_key_url: 'https://dirmock.example/keys' },
+      { provider: 'Other One', slug: 'other-one', status: 'Operational', free_models_count: 9, max_context: 1000000, verified_protocols: ['OpenAI Chat Completions'], tagline: 'Another.', base_url: 'https://api.other.example/v1', api_key_url: 'https://other.example/keys' },
+      { provider: 'Third', slug: 'third', status: 'Operational', free_models_count: 1, max_context: 0, verified_protocols: ['No public API'], tagline: '', base_url: '', api_key_url: '' },
+    ] });
+  if (req.method === 'GET' && req.url === '/dir/README.md') {
+    res.writeHead(200, { 'content-type': 'text/plain' });
+    return res.end(['<!-- BEGIN_PERMANENT_FREE -->', '| Provider | Free Models | Credit Card? | Max Context | Modalities | Get API Key |', '|---|---|---|---|---|---|',
+      '| DirMock | 3 | No | 131K | Text | <a href="https://dirmock.example/keys">→</a> |', '| Other One | 9 | Phone verification | 1M | Text | - |', '<!-- END_PERMANENT_FREE -->',
+      '<!-- BEGIN_BEST_MODELS -->', '| Provider | Best Free Model | Model ID | Max Context | Rate Limit |', '|---|---|---|---|---|',
+      '| DirMock | <a href="x">Hinted</a> | `dm-hinted` | 131K | 12 RPM, 600 RPD |', '| | <a href="x">Other</a> | `dm-other2` | 131K | 12 RPM, 600 RPD |', '<!-- END_BEST_MODELS -->'].join('\n'));
+  }
+  if (req.method === 'GET' && req.url.startsWith('/api/v1/benchmarks'))
+    return j(200, { data: [
+      { source: 'artificial-analysis', model_permaslug: 'vendor/mystery-9b', display_name: 'Mystery 9B', intelligence_index: 60, coding_index: 55, agentic_index: 50 },
+      { source: 'artificial-analysis', model_permaslug: 'vendor/model-alpha-2', display_name: 'Model Alpha 2', intelligence_index: 70, coding_index: 65, agentic_index: 60 },
+      ...Array.from({ length: 12 }, (_, i) => ({ source: 'artificial-analysis', model_permaslug: 'x/filler-' + i, intelligence_index: 20 + i })),
+    ], meta: {} });
+  if (req.method === 'GET' && req.url === '/site/docs') {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    return res.end('<html><body><h1>Free tier</h1><p>The free tier gives every account 7 requests per minute and 700 requests per day. No credit card is needed. Free models: lp-special. ' + 'Details about our platform and pricing. '.repeat(10) + '</p></body></html>');
+  }
   if (req.method === 'GET' && req.url.endsWith('/models')) {
     const k = (req.headers.authorization || '').slice(7);
     if (k === 'BAD-key-xxxx') return j(401, { error: { message: 'invalid api key' } });
@@ -77,6 +103,9 @@ const mock = http.createServer(async (req, res) => {
   for await (const c of req) b += c;
   const body = JSON.parse(b);
   const key = (req.headers.authorization || '').slice(7);
+  // The router asks one of its free models to read a provider's docs.
+  if (String(body.messages?.[0]?.content || '').includes('FREE usage terms'))
+    return j(200, { choices: [{ message: { role: 'assistant', content: 'Here it is: {"free_tier":true,"card_required":"no","limits":{"rpm":7,"rpd":700,"tpd":null},"free_tokens":null,"free_models":["lp-special"],"signup_url":"https://evil.example/steal","notes":"Seven requests a minute, no card."}' } }], usage: { prompt_tokens: 900, completion_tokens: 60 } });
   calls.push(key + ':' + body.model);
   if (key === 'FB-key-xxxx' && body.model === 'locked') return j(403, { error: { message: 'This model is not available on your plan' } });
   if (key === 'WT-key-xxxx' && WT.fail > 0) {
@@ -127,8 +156,9 @@ const mock = http.createServer(async (req, res) => {
 await new Promise((r) => mock.listen(9901, r));
 
 fs.rmSync('test/.state', { recursive: true, force: true });
-fs.writeFileSync('test/test.env', 'ADMIN_KEY=admin-secret-123\nBENCH_URL=http://127.0.0.1:9901\n');
-process.env.BENCH_URL = 'http://127.0.0.1:9901';
+const TEST_ENV = { ADMIN_KEY: 'admin-secret-123', BENCH_URL: 'http://127.0.0.1:9901', BENCH_OR_URL: 'http://127.0.0.1:9901/api/v1', DIR_URL: 'http://127.0.0.1:9901/dir', LEARN_LOCAL: '1' };
+fs.writeFileSync('test/test.env', Object.entries(TEST_ENV).map(([k, v]) => k + '=' + v).join('\n') + '\n');
+Object.assign(process.env, TEST_ENV);
 // KR_TARGET=vercel runs the same checks against the Vercel entry point (api/index.js) with a local Redis stand-in.
 const VERCEL = process.env.KR_TARGET === 'vercel';
 const cmd = VERCEL ? ['node', ['test/vercel-serve.mjs', '9800']] : ['npx', ['wrangler', 'dev', '--port', '9800', '--ip', '127.0.0.1', '--env-file', 'test/test.env', '--persist-to', 'test/.state']];
@@ -657,9 +687,66 @@ try {
     assert.ok(a.score > b.score, 'overall: alpha above beta ' + a.score + ' ' + b.score);
     assert.ok(b.arena.coding > a.arena.coding, 'coding board: beta above alpha');
     assert.ok(row('mystery-9b:free').score < b.score, 'estimate ranks below listed models');
+    assert.match(cv.bench.openrouter.error, /OpenRouter key/);
+    // with an OpenRouter key its benchmarks (Artificial Analysis) join in
+    await admin('PUT', 'providers/openrouter', { baseUrl: base, billing: 'per-model' });
+    await admin('POST', 'providers/openrouter/keys', { key: 'OR-key-xxxx', label: '' });
+    const cv2 = (await admin('POST', 'benchmarks/refresh', {})).body;
+    const row2 = (id) => cv2.models.find((m) => m.provider === 'bt' && m.id === id);
+    assert.ok(cv2.bench.openrouter.models >= 10, JSON.stringify(cv2.bench.openrouter));
+    assert.equal(row2('mystery-9b:free').src, 'openrouter');
+    assert.equal(row2('mystery-9b:free').aa.intelligence, 60);
+    assert.equal(row2('vendor/model-alpha-2:free').src, 'both');
+    await admin('DELETE', 'providers/openrouter');
     await admin('DELETE', 'providers/bt');
   }
-  step('model scores come from the LMArena leaderboard, per task, estimates marked');
+  step('model scores come from LMArena and OpenRouter benchmarks, per task, estimates marked');
+
+  // provider directory: discover list, settings filled in on connect, your own limits kept
+  {
+    const dv = (await admin('POST', 'discover/refresh', {})).body;
+    const dm = dv.providers.find((e) => e.id === 'dirmock');
+    assert.ok(dm, JSON.stringify(dv).slice(0, 300));
+    assert.equal(dm.card, 'No');
+    assert.deepEqual(dm.limits, { rpm: 12, rpd: 600 });
+    assert.equal(dm.keyUrl, 'https://dirmock.example/keys');
+    assert.equal(dv.providers.find((e) => e.id === 'third').openai, false);
+    await admin('PUT', 'providers/dirmock', { baseUrl: base, billing: 'per-model' });
+    await admin('POST', 'providers/dirmock/keys', { key: 'DM-key-xxxx', label: '' });
+    let p = (await admin('GET', 'dashboard')).body.providers.find((x) => x.name === 'dirmock');
+    assert.deepEqual(p.limits, { rpm: 12, rpd: 600 }, JSON.stringify(p));
+    assert.equal(p.auto.card, 'No');
+    assert.equal(p.free, 1, 'dm-hinted counts free: the directory names it and the list shows no price');
+    assert.equal((await admin('GET', 'discover')).body.providers.find((e) => e.id === 'dirmock').connected, 'dirmock');
+    // limits you set win over the directory
+    await admin('PUT', 'providers/dirmock', { limits: { rpm: 5 } });
+    await admin('POST', 'discover/refresh', {});
+    p = (await admin('GET', 'dashboard')).body.providers.find((x) => x.name === 'dirmock');
+    assert.equal(p.limits.rpm, 5);
+    assert.equal(p.limitsManual, true);
+    await admin('DELETE', 'providers/dirmock');
+  }
+  step('directory: discover list, settings filled in on connect, hand-set limits kept');
+
+  // reading a provider's own docs with a free model
+  {
+    await admin('PUT', 'providers/lp', { baseUrl: base, billing: 'per-model', docs: base + '/site/docs' });
+    await admin('POST', 'providers/lp/keys', { key: 'LP-key-xxxx', label: '' });
+    const r = (await admin('POST', 'providers/lp/learn', {})).body;
+    assert.equal(r.result, 'learned', JSON.stringify(r).slice(0, 300));
+    const p = r.dashboard.providers.find((x) => x.name === 'lp');
+    assert.deepEqual(p.limits, { rpm: 7, rpd: 700 });
+    assert.equal(p.auto.card, 'No');
+    assert.equal(p.auto.signupUrl, null, 'a sign-up link to another site is dropped');
+    assert.ok(p.auto.log.length >= 1 && /RPM/.test(p.auto.log[0].text), JSON.stringify(p.auto.log));
+    assert.equal(p.free, 1, 'lp-special is free per the docs');
+    const r2 = (await admin('POST', 'providers/lp/learn', {})).body;
+    assert.equal(r2.result, 'learned', 'forced read runs again');
+    await admin('PUT', 'providers/lp', { autoUpdate: false });
+    assert.equal((await admin('GET', 'dashboard')).body.providers.find((x) => x.name === 'lp').autoUpdate, false);
+    await admin('DELETE', 'providers/lp');
+  }
+  step('website or docs read by a free model into limits and free models; off switch');
 
   // a 429 while checking a key is a rate limit, not a broken key; a 404 points at the base URL
   {

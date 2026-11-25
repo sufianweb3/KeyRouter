@@ -6,6 +6,22 @@ import { spawn } from 'node:child_process';
 let n = 0;
 http.createServer(async (req, res) => {
   const j = (s, o, h = {}) => { res.writeHead(s, { 'content-type': 'application/json', ...h }); res.end(JSON.stringify(o)); };
+  if (req.method === 'GET' && req.url === '/dir/status.json') return j(200, { catalog_updated_at: '2026-11-25', providers: [
+    { provider: 'NVIDIA NIM', slug: 'nvidia-nim', status: 'Operational', free_models_count: 82, max_context: 1048576, verified_protocols: ['OpenAI Chat Completions'], tagline: '100+ open models from NVIDIA, no credit card, 40 RPM.', base_url: 'https://integrate.api.nvidia.com/v1', api_key_url: 'https://build.nvidia.com/settings/api-keys' },
+    { provider: 'OpenRouter', slug: 'openrouter', status: 'Operational', free_models_count: 20, max_context: 1048576, verified_protocols: ['OpenAI Chat Completions'], tagline: 'Single API key for 300+ models.', base_url: 'https://openrouter.ai/api/v1', api_key_url: 'https://openrouter.ai/workspaces/default/keys' },
+    { provider: 'ModelScope', slug: 'modelscope', status: 'Operational', free_models_count: 33, max_context: 1000000, verified_protocols: ['OpenAI Chat Completions'], tagline: 'Alibaba ModelScope: Qwen and DeepSeek at 2,000 RPD free.', base_url: 'https://api-inference.modelscope.cn/v1', api_key_url: 'https://modelscope.cn/my/myaccesstoken' },
+    { provider: 'LLM7.io', slug: 'llm7-io', status: 'Operational', free_models_count: 11, max_context: 1048576, verified_protocols: ['OpenAI Chat Completions'], tagline: 'Free GPT-4o-mini access.', base_url: 'https://api.llm7.io/v1', api_key_url: 'https://token.llm7.io' },
+    { provider: 'Perch AI', slug: 'perch-ai', status: 'Operational', free_models_count: 3, max_context: 0, verified_protocols: ['No public API'], tagline: 'Chat workbench only.', base_url: '', api_key_url: '' },
+  ] });
+  if (req.method === 'GET' && req.url === '/dir/README.md') {
+    res.writeHead(200, { 'content-type': 'text/plain' });
+    return res.end(['<!-- BEGIN_PERMANENT_FREE -->', '| Provider | Free Models | Credit Card? | Max Context | Modalities | Get API Key |', '|---|---|---|---|---|---|',
+      '| NVIDIA NIM | 82 | Phone verification | 1M | Multimodal | - |', '| ModelScope | 33 | Registration | 1M | Vision | - |', '| LLM7.io | 11 | No | 1M | Multimodal | - |', '| Perch AI | 3 | No | 0 | Text | - |', '<!-- END_PERMANENT_FREE -->',
+      '<!-- BEGIN_RENEWABLE -->', '| Provider | Free Models | Credit Model | Max Context | Modalities | Get API Key |', '|---|---|---|---|---|---|', '| OpenRouter | 20 | Free tier + $10 topup → 1K RPD | 1M | Multimodal | - |', '<!-- END_RENEWABLE -->',
+      '<!-- BEGIN_BEST_MODELS -->', '| Provider | Best Free Model | Model ID | Max Context | Rate Limit |', '|---|---|---|---|---|',
+      '| NVIDIA NIM | <a href="x">GLM</a> | `z-ai/glm-5.3-flash` | 1M | Up to 40 RPM |', '| | <a href="x">Kimi</a> | `moonshotai/kimi-k2.6` | 262K | Up to 40 RPM |',
+      '| LLM7.io | <a href="x">GLM</a> | `glm-5.3-flash` | 1M | 60 RPM, 250 req/hr |', '<!-- END_BEST_MODELS -->'].join('\n'));
+  }
   if (req.method === 'GET') {
     const k = (req.headers.authorization || '').slice(7);
     // a free-credit provider: only paid models, but a free token allowance on the account
@@ -46,7 +62,7 @@ http.createServer(async (req, res) => {
 }).listen(9901);
 
 fs.rmSync('test/.state', { recursive: true, force: true });
-fs.writeFileSync('test/test.env', 'ADMIN_KEY=admin-secret-123\nBENCH_OFF=1\n');
+fs.writeFileSync('test/test.env', 'ADMIN_KEY=admin-secret-123\nBENCH_OFF=1\nLEARN_OFF=1\nDIR_URL=http://127.0.0.1:9901/dir\n');
 const proc = spawn('npx', ['wrangler', 'dev', '--port', '9800', '--ip', '127.0.0.1', '--env-file', 'test/test.env', '--persist-to', 'test/.state'], { stdio: 'ignore', detached: true });
 process.on('SIGTERM', () => { try { process.kill(-proc.pid); } catch {} process.exit(0); });
 

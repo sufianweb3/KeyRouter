@@ -13,6 +13,7 @@
   var PAGES = [
     ['overview', 'Overview', 'home'],
     ['providers', 'Providers', 'server'],
+    ['discover', 'Discover', 'compass'],
     ['models', 'Models', 'cube'],
     ['usage', 'Usage', 'chart'],
     ['keys', 'Agent keys', 'key'],
@@ -72,7 +73,12 @@
     search: ['M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z', 'M21 21l-4.3-4.3'],
     panel: ['M4 4h16v16H4z', 'M9.5 4v16', 'M15 10l-2 2 2 2'],
     panelOpen: ['M4 4h16v16H4z', 'M9.5 4v16', 'M13 10l2 2-2 2'],
-    info: ['M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z', 'M12 11v5', 'M12 8h.01']
+    info: ['M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z', 'M12 11v5', 'M12 8h.01'],
+    pulse: ['M3 12h4l3-8 4 16 3-8h4'],
+    chevR: ['M9 6l6 6-6 6'],
+    ext: ['M14 4h6v6', 'M20 4l-9 9', 'M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5'],
+    compass: ['M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z', 'M15.5 8.5l-2 5-5 2 2-5z'],
+    sparkle: ['M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z', 'M19 15l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z']
   };
   var SVGNS = 'http://www.w3.org/2000/svg';
   function icon(name) {
@@ -93,6 +99,18 @@
   }
 
   // ---------- theme: follows the system until you pick one ----------
+  var RTIP = null;
+  function railTip(e) {
+    var t = e.target.closest && e.target.closest('.side [data-tip]');
+    if (!t || !MINI || window.innerWidth <= 860) return;
+    if (!RTIP) { RTIP = h('div', { class: 'rtip', role: 'tooltip' }); document.body.append(RTIP); }
+    var r = t.getBoundingClientRect();
+    RTIP.textContent = t.getAttribute('data-tip');
+    RTIP.style.left = r.right + 12 + 'px';
+    RTIP.style.top = r.top + r.height / 2 + 'px';
+    RTIP.classList.add('on');
+  }
+  function railTipOff() { if (RTIP) RTIP.classList.remove('on'); }
   var MINI = false;
   try { MINI = localStorage.getItem('kr_side') === 'mini'; } catch (e) { MINI = false; }
   var THEME = null;
@@ -162,11 +180,11 @@
     if (u) el.replaceChildren(h('img', { src: u, alt: '', draggable: 'false' }));
     else el.replaceChildren(String(n).slice(0, 2));
   }
-  function plogo(n, cls) {
+  function plogo(n, cls, base) {
     var el = h('span', { class: 'plogo ' + (cls || ''), 'data-logo': n, 'aria-hidden': 'true' });
     fillLogo(el, n);
     if (!(n in LOGOS)) {
-      LOGO_WANT[n] = logoBase(n);
+      LOGO_WANT[n] = base || logoBase(n);
       if (!LOGO_TIMER) LOGO_TIMER = setTimeout(loadLogos, 60);
     }
     return el;
@@ -581,6 +599,7 @@
     var shell = h('div', { class: 'shell' + (MINI ? ' mini' : '') });
     var foldB = h('button', { type: 'button', class: 'side-fold', 'aria-label': MINI ? 'Expand sidebar' : 'Collapse sidebar', 'aria-expanded': String(!MINI), 'data-tip': MINI ? 'Expand' : null, onclick: function () {
       MINI = !MINI;
+      railTipOff();
       try { localStorage.setItem('kr_side', MINI ? 'mini' : 'full'); } catch (e) { /* private mode */ }
       shell.classList.toggle('mini', MINI);
       foldB.setAttribute('aria-label', MINI ? 'Expand sidebar' : 'Collapse sidebar');
@@ -603,9 +622,95 @@
         h('div', { class: 'mtop' }, h('div', { class: 'logo' }, icon('layers')), 'KeyRouter', h('span', { class: 'sp' }), themeFab(), iconBtn('logout', 'Lock', function () { logout(); }, 'ghost')),
         main));
     app.replaceChildren(shell);
+    shell.addEventListener('mouseover', railTip);
+    shell.addEventListener('focusin', railTip);
+    shell.addEventListener('mouseout', railTipOff);
+    shell.addEventListener('focusout', railTipOff);
     syncTheme();
-    var view = { overview: viewOverview, providers: viewProviders, models: viewModels, usage: viewUsage, keys: viewKeys, playground: viewPlayground, settings: viewSettings }[PAGE];
+    var view = { overview: viewOverview, providers: viewProviders, discover: viewDiscover, models: viewModels, usage: viewUsage, keys: viewKeys, playground: viewPlayground, settings: viewSettings }[PAGE];
     view(main);
+  }
+
+  // ---------- discover ----------
+  var DFILTER = 'all';
+  var DQ = '';
+  function viewDiscover(main) {
+    var body = page(true);
+    var refreshB = btn('Refresh list', function () {
+      busy(refreshB, 'Loading', api('POST', 'discover/refresh', {})).then(function (d) { DISC = d; draw(); toast('Provider list updated'); }, fail);
+    }, 'ghost sm', 'refresh');
+    main.append(header('Discover', 'Providers with free or cheap LLM APIs, from a public directory that is checked every day. Create an account, then add it in one click.', refreshB), body);
+    var DISC = null;
+    var grid = h('div', { class: 'dgrid' });
+    var countEl = h('span', { class: 'count' });
+    var search = h('input', { type: 'search', name: 'discover-search', placeholder: 'Search providers or models', autocomplete: 'off', spellcheck: 'false', 'aria-label': 'Search the directory', value: DQ,
+      oninput: function () { DQ = search.value.trim().toLowerCase(); list(); } });
+    var filters = seg([['all', 'All'], ['nocard', 'No card'], ['open', 'Not connected'], ['new', 'New']], DFILTER, function (v) { DFILTER = v; list(); }, 'Filter');
+    var srcLine = h('div', { class: 'hint', style: { margin: '-4px 0 4px' } });
+    body.append(h('div', { class: 'ptools' }, h('div', { class: 'row', style: { gap: '12px', flexWrap: 'wrap' } }, filters, h('div', { class: 'section-label' }, 'Providers', countEl)), h('label', { class: 'search' }, icon('search'), search)), srcLine, grid);
+    function noCard(e) { return /^no\b/i.test(e.card || '') || /registration/i.test(e.card || ''); }
+    function list() {
+      if (!DISC) return;
+      var all = DISC.providers;
+      var shown = all.filter(function (e) {
+        if (DFILTER === 'nocard' && !noCard(e)) return false;
+        if (DFILTER === 'open' && e.connected) return false;
+        if (DFILTER === 'new' && !e.isNew) return false;
+        if (!DQ) return true;
+        var hay = (e.name + ' ' + e.tagline + ' ' + (e.baseUrl || '') + ' ' + e.models.map(function (m) { return m.id; }).join(' ')).toLowerCase();
+        return hay.indexOf(DQ) >= 0;
+      });
+      countEl.textContent = shown.length === all.length ? String(all.length) : shown.length + ' of ' + all.length;
+      grid.replaceChildren.apply(grid, shown.length ? shown.map(dcard) : [h('div', { class: 'card empty' }, all.length ? 'No provider matches.' : 'The directory is empty right now. Try Refresh list.')]);
+    }
+    function draw() {
+      srcLine.replaceChildren(
+        'Source: ', h('a', { href: DISC.source.url, target: '_blank', rel: 'noopener noreferrer', title: 'Opens in a new tab' }, DISC.source.name, icon('ext')),
+        DISC.updated ? ', updated ' + dayLabel(DISC.updated) + '. ' : '. ',
+        DISC.error ? 'Last refresh failed: ' + DISC.error + '. ' : '',
+        'Limits and card rules come from the directory; KeyRouter checks the real ones once you connect.');
+      list();
+    }
+    function addName(e) {
+      if (e.connected) return e.connected;
+      if (e.preset) return e.preset;
+      var n = String(e.id || '').toLowerCase().replace(/[^a-z0-9_-]/g, '-').replace(/^-+/, '').slice(0, 32);
+      return NAME_OK.test(n) ? n : 'provider';
+    }
+    function dcard(e) {
+      var nm = addName(e);
+      var cardTxt = e.card || 'Unknown';
+      var chips = [
+        e.freeModels ? h('span', { class: 'tag free' }, plural(e.freeModels, 'free model')) : null,
+        e.card ? h('span', { class: 'tag ' + (noCard(e) ? 'free' : 'paidt'), title: 'What sign-up asks for' }, /^no$/i.test(cardTxt) ? 'No card' : cardTxt) : null,
+        e.maxContext ? h('span', { class: 'tag' }, fmtCtx(e.maxContext) + ' context') : null,
+        e.limitText ? h('span', { class: 'tag', title: 'Free limit' }, e.limitText) : null,
+        e.credits ? h('span', { class: 'tag credit', title: 'Credits' }, e.credits) : null,
+        e.isNew ? h('span', { class: 'tag new' }, 'New') : null,
+        e.status && !/operational/i.test(e.status) ? h('span', { class: 'tag paidt' }, e.status) : null,
+        !e.openai ? h('span', { class: 'tag paidt', title: e.protocols }, 'Not OpenAI-compatible') : null];
+      var addB = btn('Add', function () {
+        PREFILL = { name: nm, baseUrl: e.baseUrl, docs: e.website };
+        go('providers');
+      }, 'orange sm', 'plus', e.baseUrl ? null : { disabled: true, title: 'No public API address listed' });
+      return h('article', { class: 'card dcard' + (e.connected ? ' on' : '') },
+        h('div', { class: 'dc-head' }, plogo(nm, '', e.baseUrl || e.website), h('div', { class: 'dc-t' }, h('h3', null, e.name), h('div', { class: 'hint' }, (e.baseUrl || e.website || '').replace(/^https:\/\//, ''))),
+          e.connected ? h('span', { class: 'pill ready' }, icon('check'), 'Connected') : null),
+        e.tagline ? h('p', { class: 'dc-tag' }, e.tagline) : null,
+        h('div', { class: 'dc-chips' }, chips),
+        e.models.length ? h('div', { class: 'dc-models' }, e.models.slice(0, 3).map(function (m) { return h('div', { class: 'dc-m' }, h('span', { class: 'mono' }, m.id), m.limit && m.limit !== '-' ? h('span', { class: 'faint' }, m.limit) : null); })) : null,
+        h('div', { class: 'dc-foot' },
+          e.keyUrl ? h('a', { class: 'btn ghost sm', href: e.keyUrl, target: '_blank', rel: 'noopener noreferrer', title: 'Opens ' + e.name + ' in a new tab' }, 'Create account', icon('ext')) : null,
+          h('span', { class: 'sp' }),
+          e.connected ? btn('Open', function () { EXPANDED[e.connected] = true; NEWLY = e.connected; go('providers'); }, 'soft sm', 'chevR') : addB));
+    }
+    function fmtCtx(n) { return n >= 1000000 ? Math.round(n / 100000) / 10 + 'M' : Math.round(n / 1000) + 'K'; }
+    grid.append(h('div', { class: 'card empty' }, 'Loading the provider directory…'));
+    api('GET', 'discover').then(function (d) {
+      DISC = d;
+      if (!d.providers.length && !d.error) return api('POST', 'discover/refresh', {}).then(function (d2) { DISC = d2; draw(); });
+      draw();
+    }).catch(function (e) { if (e.message !== 'unauthorized') grid.replaceChildren(h('div', { class: 'card empty err' }, e.message)); });
   }
 
   function header(title, sub, actions) {
@@ -647,7 +752,7 @@
       body.replaceChildren(
         h('div', { class: 'grid g4' },
           kpi('orange', 'Tokens today', 'bolt', tokBig, [h('span', { class: 'chip' }, fmt(t.today.p) + ' in'), h('span', { class: 'chip' }, fmt(t.today.c) + ' out')]),
-          kpi('', 'Requests today', 'arrow', reqBig, plural(t.week.req, 'request') + ' this week'),
+          kpi('', 'Requests today', 'pulse', reqBig, plural(t.week.req, 'request') + ' this week'),
           kpi('lime', 'Free models ready', 'check', fmt(readyFree), 'Tested and working on ' + plural(ready.length, 'provider')),
           kpi('dark', 'Providers ready', 'server', h('div', { class: 'big' }, String(ready.length), h('small', null, '/ ' + keyed.length)),
             problems.length ? plural(problems.length, 'provider') + ' need a look' : 'Everything connected is healthy')),
@@ -703,7 +808,7 @@
       h('div', { class: 'card-head' },
         h('div', null, h('h3', null, isTok ? 'Free tokens today' : 'Free requests today'),
           h('div', { class: 'sub' }, c.known ? 'Across ' + plural(c.known, 'provider') + ' with a daily limit' : 'No provider has a daily limit yet')),
-        h('span', { class: 'cap-ic' + (isTok ? ' lime' : '') }, icon(isTok ? 'bolt' : 'arrow'))),
+        h('span', { class: 'cap-ic' + (isTok ? ' lime' : '') }, icon(isTok ? 'bolt' : 'pulse'))),
       h('div', { class: 'cap-big' },
         h('b', { class: 'num' }, fmt(c.known ? c.left : c.used)),
         h('span', null, c.known ? unit + ' left' : unit + ' used today')),
@@ -824,6 +929,7 @@
   // One compact form: key, provider and base URL. The provider is detected from the key when it can be,
   // known providers fill in their own URL, and any other name becomes a new provider.
   var NAME_OK = /^[a-z0-9][a-z0-9_-]{0,31}$/;
+  var PREFILL = null;
   function connectCard() {
     var auto = false;
     var bill = 'per-model';
@@ -840,10 +946,13 @@
       oninput: update, onkeydown: function (e) { if (e.key === 'Enter') connect(); } });
     var connectB = btn('Connect', connect, 'orange', 'plus');
     var info = h('div', { class: 'cinfo', 'aria-live': 'polite' });
+    var docsIn = h('input', { type: 'url', name: 'custom-docs', placeholder: 'https://example.com/docs (optional)', autocomplete: 'off', spellcheck: 'false', 'aria-label': 'Website or docs' });
     var billRow = h('div', { class: 'acc' }, h('div', null, h('div', { class: 'acc-inner flush' },
       h('div', { class: 'bill-row' }, h('span', { class: 'lbl' }, 'Pricing'),
         seg([['per-model', 'Auto'], ['free', 'All free'], ['paid', 'All paid']], bill, function (v) { bill = v; }, 'Pricing'),
-        h('span', { class: 'hint' }, 'Auto reads each model\'s price. A model with a listed price is never treated as free.')))));
+        h('span', { class: 'hint' }, 'Auto reads each model\'s price. A model with a listed price is never treated as free.')),
+      h('div', { class: 'bill-row' }, h('span', { class: 'lbl' }, 'Website or docs'), docsIn,
+        h('span', { class: 'hint' }, 'Optional. KeyRouter reads it for free models and limits, and checks again every week. Without it, it reads the site behind the base URL.')))));
 
     function typed() { return nameIn.value.trim().toLowerCase(); }
     // Base URL KeyRouter already knows for this name, if any.
@@ -868,7 +977,7 @@
       if (fixed) { urlIn.value = fixed; urlIn.readOnly = true; }
       else if (urlIn.readOnly) { urlIn.value = ''; urlIn.readOnly = false; }
       var isNew = !!n && !fixed;
-      billRow.classList.toggle('open', isNew);
+      billRow.classList.toggle('open', isNew || !!docsIn.value);
       var pre = CFG.presets[n];
       var keyless = !!(pre && pre.keyless);
       var v = keyIn.value.trim();
@@ -1006,11 +1115,17 @@
         return;
       }
       var first = Promise.resolve();
-      if (!knownUrl(n)) first = api('PUT', 'providers/' + encodeURIComponent(n), { baseUrl: urlIn.value.trim(), billing: bill });
+      var docs = docsIn.value.trim();
+      if (!knownUrl(n)) first = api('PUT', 'providers/' + encodeURIComponent(n), { baseUrl: urlIn.value.trim(), billing: bill, docs: docs });
       busy(connectB, key ? 'Checking key' : 'Turning on', first.then(function () {
         return api('POST', 'providers/' + encodeURIComponent(n) + '/keys', key ? { key: key, label: '' } : { keyless: true });
-      }).then(function (c) { CFG = c; return api('GET', 'dashboard'); })).then(function (d) {
+      }).then(function (c) {
+        CFG = c;
+        // A known provider keeps its own address; a docs link given for it is saved after the key.
+        return knownUrl(n) && docs ? api('PUT', 'providers/' + encodeURIComponent(n), { docs: docs }) : c;
+      }).then(function () { return api('GET', 'dashboard'); })).then(function (d) {
         DASH = d;
+        docsIn.value = '';
         keyIn.value = '';
         nameIn.value = '';
         urlIn.value = '';
@@ -1022,8 +1137,17 @@
       }, fail);
     }
 
+    var flash = !!PREFILL;
+    if (PREFILL) {
+      var pf = PREFILL;
+      PREFILL = null;
+      nameIn.value = pf.name;
+      if (!knownUrl(pf.name)) urlIn.value = pf.baseUrl || '';
+      docsIn.value = pf.docs || '';
+      setTimeout(function () { keyIn.focus(); }, 60);
+    }
     update();
-    return h('section', { class: 'card connect' },
+    return h('section', { class: 'card connect' + (flash ? ' flash' : '') },
       h('div', { class: 'card-head' }, h('div', null, h('h3', null, 'Connect a provider'), h('div', { class: 'sub' }, 'Your key stays on Cloudflare. Agents only ever get an agent key.'))),
       h('div', { class: 'stack', style: { gap: '12px' } },
         h('div', { class: 'cgrid' },
@@ -1034,7 +1158,7 @@
         info, billRow,
         h('div', { class: 'cfoot' },
           h('div', { class: 'getkeys' }, 'Free keys:', ['gemini', 'groq', 'openrouter', 'cerebras', 'mistral'].map(function (n) {
-            return h('a', { href: KEY_PAGES[n], target: '_blank', rel: 'noopener noreferrer' }, n, icon('arrow'));
+            return h('a', { href: KEY_PAGES[n], target: '_blank', rel: 'noopener noreferrer', title: 'Opens ' + n + ' in a new tab' }, n, icon('ext'));
           })),
           keylessRow())));
   }
@@ -1095,11 +1219,12 @@
       p.status === 'error' || p.status === 'limited' || p.status === 'warn' ? h('div', { class: 'note bad' }, icon('alert'), h('span', { style: { minWidth: '0', overflowWrap: 'anywhere' } }, p.statusText)) : null,
       p.note ? h('div', { class: 'note' }, icon('info'), h('span', null, p.note)) : null,
       h('div', { class: 'stats' },
-        h('button', { type: 'button', class: 'stat lime', 'aria-label': 'See ' + p.free + ' free models', onclick: function () { openModels(p.name, 'free'); } }, h('span', { class: 'go' }, icon('arrow')), h('div', { class: 'v' }, fmt(p.free)), h('div', { class: 'k' }, 'Free models')),
-        h('button', { type: 'button', class: 'stat', 'aria-label': 'See ' + p.paid + ' paid models', onclick: function () { openModels(p.name, 'paid'); } }, h('span', { class: 'go' }, icon('arrow')), h('div', { class: 'v' }, fmt(p.paid)), h('div', { class: 'k' }, 'Paid models')),
+        h('button', { type: 'button', class: 'stat lime', 'aria-label': 'See ' + p.free + ' free models', onclick: function () { openModels(p.name, 'free'); } }, h('span', { class: 'go' }, icon('chevR')), h('div', { class: 'v' }, fmt(p.free)), h('div', { class: 'k' }, 'Free models')),
+        h('button', { type: 'button', class: 'stat', 'aria-label': 'See ' + p.paid + ' paid models', onclick: function () { openModels(p.name, 'paid'); } }, h('span', { class: 'go' }, icon('chevR')), h('div', { class: 'v' }, fmt(p.paid)), h('div', { class: 'k' }, 'Paid models')),
         h('div', { class: 'stat' }, h('div', { class: 'v' }, fmt(tok(p.tokensToday))), h('div', { class: 'k' }, 'Tokens today')),
         h('div', { class: 'stat' }, h('div', { class: 'v' }, fmt(keysReq)), h('div', { class: 'k' }, 'Requests today'))),
       testLine,
+      autoBox(p),
       p.allowance || p.tpd ? h('div', { class: 'meters wide' },
         p.allowance ? h('div', null, meter('Free tokens' + (p.allowance.per === 'day' ? ' today' : p.allowance.per === 'month' ? ' this month' : p.allowance.per === 'once' ? '' : ' (' + p.allowance.per.toUpperCase() + ' window)'), p.allowance.used, p.allowance.tokens, 'lime'),
           h('div', { class: 'hint', style: { marginTop: '6px' } }, (p.allowance.left > 0 ? (p.credit ? plural(p.credit, 'paid model') + ' count as free until this runs out.' : 'Paid models count as free until this runs out.') : 'Used up. Paid models are paid again' + (p.allowance.per === 'once' ? '.' : ' until it resets.')) + (p.allowance.resetAt ? ' Refills ' + whenIn(p.allowance.resetAt) + '.' : ''))) : null,
@@ -1131,6 +1256,46 @@
       h('span', { class: 'chev', 'aria-hidden': 'true' }, icon('chevron')));
     card = h('article', { class: 'card pcard' + (open ? ' open' : '') + (NEWLY === p.name ? ' new' : '') }, head, fold);
     return card;
+  }
+
+  // What KeyRouter set up by itself for this provider, where it came from and what changed.
+  var SRC_NAME = { directory: 'freellm.net directory', docs: 'its website' };
+  function autoBox(p) {
+    var a = p.auto;
+    if (!a && !p.docs) return null;
+    a = a || { sources: {}, log: [] };
+    var lim = p.limits || {};
+    var limTxt = [lim.rpm ? fmt(lim.rpm) + ' requests a minute' : null, lim.rpd ? fmt(lim.rpd) + ' a day' : null, lim.tpd ? fmt(lim.tpd) + ' tokens a day' : null].filter(Boolean).join(' · ');
+    var srcs = Object.keys(a.sources || {}).sort(function (x, y) { return a.sources[y] - a.sources[x]; });
+    var learnB = btn('Read website now', function () {
+      busy(learnB, 'Reading', api('POST', 'providers/' + encodeURIComponent(p.name) + '/learn', {})).then(function (r) {
+        DASH = r.dashboard;
+        var np = DASH.providers.filter(function (x) { return x.name === p.name; })[0];
+        toast(r.result === 'learned' ? 'Settings read from ' + cap(p.name) + '\'s website' : r.result === 'unchanged' ? 'Nothing changed on the website' : (np && np.auto && np.auto.note) || 'Nothing new found', r.result !== 'learned' && r.result !== 'unchanged');
+        render();
+      }, fail);
+    }, 'ghost sm', 'refresh');
+    var facts = [];
+    if (a.card) facts.push(h('span', { class: 'tag ' + (/^no$/i.test(a.card) ? 'free' : 'paidt') }, /^no$/i.test(a.card) ? 'No card needed' : a.card));
+    if (a.listedFree) facts.push(h('span', { class: 'tag' }, plural(a.listedFree, 'free model') + ' listed'));
+    if (a.hinted && p.free) facts.push(h('span', { class: 'tag', title: 'Models the directory or docs call free count as free when the model list shows no price' }, plural(a.hinted, 'model') + ' named free'));
+    return h('div', { class: 'autobox' },
+      h('div', { class: 'ab-head' },
+        h('span', { class: 'ab-ic' }, icon('sparkle')),
+        h('div', { class: 'ab-t' }, h('b', null, 'Set up automatically'),
+          h('div', { class: 'hint' }, srcs.length ? 'From ' + srcs.map(function (x) { return (SRC_NAME[x] || x) + ' (' + ago(a.sources[x]) + ')'; }).join(' and ') + '. ' + (p.autoUpdate ? 'Checked again for changes.' : 'Updates are off.') : 'Waiting to read ' + (p.docs || 'the website') + '.')),
+        facts.length ? h('div', { class: 'ab-facts' }, facts) : null),
+      limTxt ? h('div', { class: 'hint' }, h('b', null, 'Limits: '), limTxt, p.limitsManual ? ' (set by you, kept as is)' : '') : null,
+      a.notes ? h('div', { class: 'hint' }, a.notes) : null,
+      p.free === 0 && a.listedFree ? h('div', { class: 'note' }, icon('info'), h('span', null, 'The directory lists ' + plural(a.listedFree, 'free model') + ' here, but none show as free in the model list. Use the free model IDs from the provider, or set Pricing to "All free" if every model is free.')) : null,
+      a.note ? h('div', { class: 'hint' }, a.note) : null,
+      (a.log || []).length ? h('div', { class: 'ab-log' }, h('div', { class: 'section-label' }, 'Changes'), a.log.slice(0, 4).map(function (x) { return h('div', { class: 'ab-row' }, h('span', { class: 'when' }, ago(x.at)), h('span', null, x.text), h('span', { class: 'faint' }, SRC_NAME[x.source] || x.source)); })) : null,
+      h('div', { class: 'row', style: { gap: '8px' } },
+        learnB,
+        a.signupUrl ? h('a', { class: 'btn ghost sm', href: a.signupUrl, target: '_blank', rel: 'noopener noreferrer', title: 'Opens in a new tab' }, 'Account page', icon('ext')) : null,
+        h('span', { class: 'sp' }),
+        h('label', { class: 'row', style: { gap: '8px' } }, h('span', { class: 'hint' }, 'Keep updated'),
+          sw(p.autoUpdate, function (on) { act(api('PUT', 'providers/' + encodeURIComponent(p.name), { autoUpdate: on }), on ? 'Automatic updates on' : 'Automatic updates off').then(reload, function () {}); }, 'Keep ' + p.name + ' settings updated'))));
   }
 
   function keyBox(p, k) {
@@ -1180,11 +1345,12 @@
     var alTok = numIn(al ? al.tokens : '', { name: 'allow-tokens', placeholder: 'None', 'aria-label': 'Free tokens' });
     var alPer = sel([['once', 'One-time credit'], ['5h', 'Every 5 hours'], ['9h', 'Every 9 hours'], ['12h', 'Every 12 hours'], ['day', 'Every day'], ['month', 'Every month']], al ? al.per : 'once', null, { 'aria-label': 'Free tokens reset' });
     var tpd = numIn(lim(p.limits, 'tpd'), { name: 'tpd', placeholder: 'No limit', 'aria-label': 'Tokens per day' });
+    var docs = h('input', { type: 'url', value: p.docs || '', placeholder: (p.auto && p.auto.website) || 'https://example.com/docs', spellcheck: 'false', 'aria-label': 'Website or docs' });
     return h('div', { class: 'stack', style: { gap: '16px' } },
       h('div', { class: 'toggle-row' },
         h('div', null, h('b', null, 'Use this provider'), h('div', { class: 'hint' }, p.enabled ? 'Agents can be routed here.' : 'Turned off: agents skip it.')),
         sw(p.enabled, function (on) { act(api('PUT', 'providers/' + encodeURIComponent(p.name), { enabled: on }), cap(p.name) + (on ? ' on' : ' off')).then(reload, function () {}); }, 'Use ' + p.name)),
-      field('Base URL', url),
+      h('div', { class: 'form-grid' }, field('Base URL', url), field('Website or docs', docs, 'Read for free models and limits, again every week.')),
       h('div', { class: 'form-grid three' },
         field('Pricing', bill, 'Listed prices always win.'),
         field('Requests per minute', rpm, 'Per key. Empty: learned from the provider.'),
@@ -1200,7 +1366,7 @@
           if (rpd.num > 0) limits.rpd = rpd.num;
           if (tpd.num > 0) limits.tpd = tpd.num;
           var allowance = alTok.num > 0 ? { tokens: alTok.num, per: alPer.value } : null;
-          act(api('PUT', 'providers/' + encodeURIComponent(p.name), { baseUrl: url.value.trim(), billing: bill.value, limits: limits, allowance: allowance }), 'Saved').then(reload, function () {});
+          act(api('PUT', 'providers/' + encodeURIComponent(p.name), { baseUrl: url.value.trim(), billing: bill.value, limits: limits, allowance: allowance, docs: docs.value.trim() }), 'Saved').then(reload, function () {});
         }, 'sm'),
         btn('Clear pauses', function () { act(api('POST', 'reset', { provider: p.name, forget: true }), 'Pauses and learned limits cleared').then(reload, function () {}); }, 'soft sm', null, { title: 'Unpause every key and model, and forget limits KeyRouter guessed from errors' }),
         h('span', { class: 'sp' }),
@@ -1285,10 +1451,14 @@
         }).sort(function (a, b) { return b.score - a.score; });
         tbody.replaceChildren.apply(tbody, rows.slice(0, 300).map(function (m) {
           var key = m.provider + '/' + m.id;
-          var src = m.src === 'lmarena'
-            ? h('span', { class: 'src arena', title: 'LMArena rating ' + m.arena.rating + (m.arena.coding ? ', coding ' + m.arena.coding : '') + (m.arena.math ? ', math ' + m.arena.math : '') + (m.arena.exact ? '' : ' (matched as ' + m.arena.as + ')') }, 'LMArena')
-            : m.src === 'custom' ? h('span', { class: 'src mine', title: 'Your own score' }, 'Yours')
-            : h('span', { class: 'src est', title: 'Not on the LMArena leaderboard. Estimated from the model family and size, and ranked a little lower.' }, 'Est.');
+          var tips = [];
+          if (m.arena) tips.push('LMArena rating ' + m.arena.rating + (m.arena.coding ? ', coding ' + m.arena.coding : '') + (m.arena.math ? ', math ' + m.arena.math : '') + (m.arena.exact ? '' : ' (as ' + m.arena.as + ')'));
+          if (m.aa) tips.push('Artificial Analysis via OpenRouter: intelligence ' + m.aa.intelligence + (m.aa.coding != null ? ', coding ' + m.aa.coding : '') + (m.aa.agentic != null ? ', agentic ' + m.aa.agentic : '') + (m.aa.exact ? '' : ' (as ' + m.aa.as + ')'));
+          var src = m.src === 'custom' ? h('span', { class: 'src mine', title: 'Your own score' }, 'Yours')
+            : m.src === 'both' ? h('span', { class: 'src arena', title: tips.join('. ') + '. Score is the average.' }, 'LMArena + OR')
+            : m.src === 'lmarena' ? h('span', { class: 'src arena', title: tips.join('. ') }, 'LMArena')
+            : m.src === 'openrouter' ? h('span', { class: 'src arena', title: tips.join('. ') }, 'OpenRouter')
+            : h('span', { class: 'src est', title: 'Not on LMArena or OpenRouter benchmarks. Estimated from the model family and size, and ranked a little lower.' }, 'Est.');
           var score = h('input', { type: 'number', min: '0', max: '100', value: String(Math.round(m.score)), 'aria-label': 'Score for ' + m.id, onchange: function () {
             api('PUT', 'overrides', { key: key, score: score.value === '' ? null : Number(score.value) }).then(function (nc) { CAT = nc; toast('Score saved'); draw(false); }, fail);
           } });
@@ -1341,19 +1511,22 @@
     }
     function benchBar(c) {
       var b = c.bench || {};
-      var arena = c.models.filter(function (m) { return m.usable && m.src === 'lmarena'; }).length;
+      var arena = c.models.filter(function (m) { return m.usable && m.src !== 'estimate' && m.src !== 'custom'; }).length;
+      var orb = b.openrouter || {};
       var all = c.models.filter(function (m) { return m.usable; }).length;
       var upd = btn('Update scores', function () {
-        busy(upd, 'Loading LMArena', api('POST', 'benchmarks/refresh', {})).then(function (nc) { CAT = nc; draw(false); toast('Scores updated from LMArena'); }, fail);
+        busy(upd, 'Loading benchmarks', api('POST', 'benchmarks/refresh', {})).then(function (nc) { CAT = nc; draw(false); toast('Scores updated'); }, fail);
       }, 'soft sm', 'refresh');
       return h('section', { class: 'card mt bench' },
         h('span', { class: 'bench-ic' }, icon('chart')),
         h('div', { class: 'bench-txt' },
-          h('b', null, b.published ? 'Scores from the LMArena leaderboard, ' + dayLabel(b.published) : 'Scores are estimates until the LMArena leaderboard loads'),
-          h('div', { class: 'hint' }, b.published
-            ? fmt(arena) + ' of ' + fmt(all) + ' models are on the leaderboard: blind side-by-side votes from millions of people, with separate coding, math and hard-prompt scores. The rest use an estimate. Refreshed every 3 days.'
-            : (b.error ? 'Last try: ' + b.error + '. ' : '') + 'KeyRouter reads the public LMArena dataset; it usually loads within a few minutes of setup.')),
-        h('a', { class: 'bench-link', href: b.source ? b.source.url : 'https://arena.ai/leaderboard', target: '_blank', rel: 'noopener noreferrer' }, 'arena.ai', icon('arrow')),
+          h('b', null, b.published || orb.at ? 'Scores from ' + [b.published ? 'LMArena (' + dayLabel(b.published) + ')' : null, orb.at ? 'OpenRouter benchmarks' : null].filter(Boolean).join(' and ') : 'Scores are estimates until benchmark data loads'),
+          h('div', { class: 'hint' }, (b.published || orb.at
+            ? fmt(arena) + ' of ' + fmt(all) + ' models have real benchmark results. LMArena is blind side-by-side votes; OpenRouter adds Artificial Analysis intelligence, coding and agentic indexes. When both know a model the score is their average. The rest use an estimate. Refreshed every 3 days.'
+            : (b.error ? 'Last try: ' + b.error + '. ' : '') + 'KeyRouter reads the public LMArena dataset; it usually loads within a few minutes of setup.') + (orb.at ? '' : ' ' + (orb.error || 'Connect an OpenRouter key to add its benchmarks.')))),
+        h('div', { class: 'bench-links' },
+          h('a', { class: 'bench-link', href: b.source ? b.source.url : 'https://arena.ai/leaderboard', target: '_blank', rel: 'noopener noreferrer', title: 'Opens in a new tab' }, 'arena.ai', icon('ext')),
+          h('a', { class: 'bench-link', href: orb.source ? orb.source.url : 'https://openrouter.ai/benchmarks', target: '_blank', rel: 'noopener noreferrer', title: 'Opens in a new tab' }, 'openrouter.ai', icon('ext'))),
         upd);
     }
     api('GET', 'catalog').then(function (c) { CAT = c; draw(true); }, function (e) { if (e.message !== 'unauthorized') body.replaceChildren(h('div', { class: 'card empty err' }, e.message)); });

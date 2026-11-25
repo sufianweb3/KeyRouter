@@ -121,3 +121,75 @@ export function benchScore(row, task) {
   else if (task === 'vision') r = v != null ? v : o;
   return toScore(r);
 }
+
+// Second source: OpenRouter's benchmarks API, which serves Artificial Analysis indexes (intelligence,
+// coding, agentic) for most models. Needs any OpenRouter key; called once every few days.
+export const OR_SOURCE = { name: 'OpenRouter', url: 'https://openrouter.ai/benchmarks', api: 'https://openrouter.ai/api/v1' };
+
+// Artificial Analysis index (about 10 to 80) to the same 0-100 scale as the arena ratings.
+export const aaScore = (x) => (x == null ? null : Math.max(0, Math.min(100, Math.round((20 + x * 0.95) * 10) / 10)));
+
+// Returns { at, n, map: { key: [intelligence, coding, agentic] } }.
+export async function fetchOpenRouterBench(base, key, fetcher) {
+  const get = fetcher || fetch;
+  const root = (base || OR_SOURCE.api).replace(/\/+$/, '');
+  const r = await get(root + '/benchmarks?source=artificial-analysis', {
+    headers: { authorization: 'Bearer ' + key, accept: 'application/json', 'user-agent': 'KeyRouter (+https://github.com/sufianweb3/KeyRouter)' },
+    signal: AbortSignal.timeout(20000),
+  });
+  if (!r.ok) throw new Error('OpenRouter benchmarks answered ' + r.status);
+  const j = await r.json();
+  const map = {};
+  const num = (v) => (v == null || !Number.isFinite(Number(v)) ? null : Math.round(Number(v) * 10) / 10);
+  for (const x of Array.isArray(j.data) ? j.data : []) {
+    if (!x || x.source !== 'artificial-analysis') continue;
+    const row = [num(x.intelligence_index), num(x.coding_index), num(x.agentic_index)];
+    if (row[0] == null) continue;
+    for (const name of [x.model_permaslug, x.display_name]) {
+      const k = benchKey(name);
+      if (k && (!map[k] || row[0] > map[k][0])) map[k] = row;
+    }
+  }
+  const n = Object.keys(map).length;
+  if (n < 10) throw new Error('OpenRouter benchmarks looked empty (' + n + ' models)');
+  return { at: Date.now(), n, map };
+}
+
+// Score for one task from an Artificial Analysis row.
+export function aaTaskScore(row, task, needTools) {
+  const [i, c, a] = row;
+  let x = i;
+  if (task === 'coding' && c != null) x = c;
+  if (needTools && a != null) x = (x + a) / 2;
+  return aaScore(x);
+}
+
+// The two sources use different scales. Fit the OpenRouter (Artificial Analysis) score onto the LMArena
+// score with a straight line over the models both know, so averaging them never drags a model down.
+export function fitAA(bench, or) {
+  const L = (bench && bench.map) || {};
+  const A = (or && or.map) || {};
+  const xs = [];
+  const ys = [];
+  for (const k of Object.keys(A)) {
+    if (!L[k]) continue;
+    const x = aaTaskScore(A[k], 'general', false);
+    const y = benchScore(L[k], 'general');
+    if (x == null || y == null || !Number.isFinite(x) || !Number.isFinite(y)) continue;
+    xs.push(x);
+    ys.push(y);
+  }
+  const n = xs.length;
+  if (n < 8) return null;
+  const mx = xs.reduce((s, v) => s + v, 0) / n;
+  const my = ys.reduce((s, v) => s + v, 0) / n;
+  let sxy = 0;
+  let sxx = 0;
+  for (let i = 0; i < n; i++) {
+    sxy += (xs[i] - mx) * (ys[i] - my);
+    sxx += (xs[i] - mx) * (xs[i] - mx);
+  }
+  if (!sxx || sxy <= 0) return null;
+  const a = sxy / sxx;
+  return { a, b: my - a * mx, n };
+}

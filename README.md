@@ -19,7 +19,9 @@ KeyRouter runs on your own Cloudflare or Vercel account (the free plans are enou
 | **Daily capacity** | Shows how many free requests and tokens you have left today across providers. |
 | **Free credits** | Track sign-up credit (like 500K free tokens) so those paid models count as free until it is used up. |
 | **Keyless providers** | Some providers work with no key at all: one click to turn them on. |
-| **Real model scores** | Models are ranked by the public [LMArena](https://arena.ai/leaderboard) leaderboard (blind votes, with separate coding, math and hard-prompt boards), refreshed every 3 days. Models it does not list get an estimate, marked "Est.", and rank a little lower. |
+| **Real model scores** | Models are ranked by the public [LMArena](https://arena.ai/leaderboard) leaderboard (blind votes, with separate coding, math and hard-prompt boards) and, once an OpenRouter key is connected, [OpenRouter's benchmarks](https://openrouter.ai/benchmarks) (Artificial Analysis intelligence, coding and agentic indexes). OpenRouter scores are fitted onto the LMArena scale, then the two are averaged. Refreshed every 3 days. Models neither lists get an estimate, marked "Est.", and rank a little lower. |
+| **Discover providers** | A Discover page lists free LLM APIs from the [freellm.net](https://freellm.net) directory (updated daily): free model count, rate limits, whether a card is needed, context size and a link to create an account. **Add** fills in the provider for you. |
+| **Automatic setup** | When you add a provider, KeyRouter fills in its rate limits, free models and card policy from the directory. Give it the provider's website or docs and a free model also reads those pages. Both are checked again over time (directory daily, docs weekly) and every change is logged on the provider. Anything you set by hand is never overwritten; turn **Keep updated** off to freeze a provider. |
 | **Provider logos** | Every provider shows its own logo, also ones you add later. Known brands use the LobeHub icon set; others use the icon from their own website. |
 
 Built-in presets include OpenRouter, Gemini, Groq, Cerebras, NVIDIA, Mistral, GitHub Models, SambaNova, Together, DeepSeek, Cohere, Hugging Face, Ollama Cloud, Chutes, Requesty, AIML API, CrowLLM, Numes, TokenHarbor, Inferbase, Respan, Infron and more (44 in all). Any other OpenAI-compatible provider works by name and base URL. Paste the address with or without `/models` or `/chat/completions` on the end: KeyRouter keeps the part calls are built on.
@@ -150,6 +152,8 @@ Your providers, keys and settings are kept across updates.
 | A provider shows "No model list at this address (404)" | The base URL is wrong. It usually ends in `/v1`. |
 | A provider shows "Blocked by the provider's firewall" | The provider refuses requests from servers. Nothing KeyRouter can change; use another provider. |
 | Scores show "Est." everywhere | The LMArena data has not loaded yet. Models page > **Update scores**. |
+| No OpenRouter scores | Connect an OpenRouter key (any free key works), then Models page > **Update scores**. |
+| Discover is empty | The directory could not be reached. Discover page > **Refresh**, or try again later. |
 | A model you expected to be free shows as paid | The provider lists a price for it. If you have free credit there, set **Free tokens** under that provider's Settings. |
 
 ## How routing handles errors
@@ -182,14 +186,23 @@ python3 test/ui_check.py      # headless browser walkthrough (needs Playwright)
 | `src/http.js` | Serves the dashboard and passes API calls to the router |
 | `src/index.js` | Cloudflare entry: stores data in a Durable Object |
 | `api/index.js`, `src/redis-storage.js` | Vercel entry: stores data in Upstash Redis |
-| `src/bench.js` | Reads the LMArena leaderboard and matches model names |
+| `src/bench.js` | Reads the LMArena leaderboard and OpenRouter benchmarks and matches model names |
+| `src/learn.js` | Reads the provider directory and provider websites or docs for limits and free models |
 | `src/logos.js` | Finds a logo for each provider |
 | `src/ui/` | The dashboard |
 
 The tests create their own throwaway admin key and database. No real keys are needed.
 
+Optional settings (Cloudflare vars or Vercel environment variables), mostly for tests:
+
+| Name | Does |
+|---|---|
+| `BENCH_OFF`, `DIR_OFF`, `LEARN_OFF` | Turn off benchmark loading, the provider directory or docs reading |
+| `BENCH_URL`, `BENCH_OR_URL`, `DIR_URL` | Point the LMArena data, OpenRouter benchmarks or directory at another address |
+| `LEARN_LOCAL` | Tests only: lets docs reading reach local addresses |
+
 ## License
 
 [MIT](LICENSE)
 
-Model scores come from the [LMArena leaderboard](https://arena.ai/leaderboard) ([dataset](https://huggingface.co/datasets/lmarena-ai/leaderboard-dataset)). Provider logos come from [LobeHub Icons](https://github.com/lobehub/lobe-icons) (MIT) or the provider's own website, and belong to their owners.
+Model scores come from the [LMArena leaderboard](https://arena.ai/leaderboard) ([dataset](https://huggingface.co/datasets/lmarena-ai/leaderboard-dataset)) and [OpenRouter's benchmarks](https://openrouter.ai/benchmarks) (data by Artificial Analysis). The provider directory comes from [freellm.net](https://freellm.net) ([awesome-freellm-apis](https://github.com/open-free-llm-api/awesome-freellm-apis)). Provider logos come from [LobeHub Icons](https://github.com/lobehub/lobe-icons) (MIT) or the provider's own website, and belong to their owners.

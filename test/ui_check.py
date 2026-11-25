@@ -253,6 +253,20 @@ with sync_playwright() as p:
     # native parts (scrollbars, pickers) follow the chosen theme, not the system one
     assert pg.evaluate("getComputedStyle(document.documentElement).colorScheme") == "light"
 
+    # discover: directory cards with card rules, limits and a create-account link; Add fills the connect form
+    pg.click(".side >> .nav-btn[data-tip='Discover']")
+    pg.wait_for_selector(".dcard")
+    dt = pg.inner_text(".dgrid")
+    assert "NVIDIA NIM" in dt and "Phone verification" in dt and "No card" in dt and "Create account" in dt and "Not OpenAI-compatible" in dt, dt
+    assert pg.locator(".dcard:has-text('OpenRouter') .pill.ready").count() == 1
+    pg.wait_for_timeout(500)
+    pg.screenshot(path=OUT + "-16-discover.png", full_page=True)
+    pg.locator(".dcard", has=pg.locator("h3", has_text="LLM7.io")).locator("button:has-text('Add')").click()
+    pg.wait_for_selector(".card.connect")
+    assert pg.input_value("input[name=custom-name]") == "llm7-io"
+    assert pg.input_value("input[name=custom-url]") == "https://api.llm7.io/v1"
+    assert pg.input_value("input[name=custom-docs]") == "https://token.llm7.io"
+    pg.screenshot(path=OUT + "-17-prefill.png")
     # models page: benchmark source bar and a source tag on every score
     pg.click(".side >> .nav-btn[data-tip='Models']")
     pg.wait_for_selector(".card.bench")
@@ -271,6 +285,11 @@ with sync_playwright() as p:
     assert abs(nb[0] - nb[1]) < 1, nb
     pg.hover(".side .nav-btn >> nth=1")
     pg.wait_for_timeout(250)
+    assert pg.is_visible(".rtip.on") and pg.inner_text(".rtip") == "Providers", pg.inner_text(".rtip")
+    # the rail buttons are true circles
+    r = pg.eval_on_selector_all(".side .nav-btn", "els => els.map(e => [e.getBoundingClientRect().width, e.getBoundingClientRect().height])")
+    assert all(abs(w - h) < 1 and w == 48 for w, h in r), r
+    assert not pg.is_visible(".side-mode"), "routing dot hidden in the rail"
     pg.screenshot(path=OUT + "-13-mini.png")
     pg.click(".side >> .nav-btn[data-tip='Models']")
     pg.wait_for_selector(".card.bench")

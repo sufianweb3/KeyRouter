@@ -188,7 +188,7 @@ export function analyze(raw, billing, trustBilling) {
     if (video) cats.push('video');
     if (ctx && ctx >= 200000) cats.push('long-context');
   }
-  return { id, chat, free, ctx, tools, score, coder, cats };
+  return { id, chat, free, priced: !!price, ctx, tools, score, coder, cats };
 }
 
 // Score used to order models for one task.

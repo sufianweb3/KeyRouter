@@ -2,7 +2,8 @@
 // Provider keys never leave Cloudflare: the admin API only returns masks.
 import { PRESETS, DEFAULT_ROUTES, DEFAULT_SETTINGS } from './config.js';
 import { CATEGORIES, SMART_NAMES, MODES, analyze, taskScore, detectTask, isChatId } from './models.js';
-import { BENCH_SOURCE, BENCH_EVERY, fetchBench, makeLookup, benchScore, toScore } from './bench.js';
+import { BENCH_SOURCE, BENCH_EVERY, fetchBench, makeLookup, benchScore, toScore, OR_SOURCE, fetchOpenRouterBench, aaScore, aaTaskScore, fitAA } from './bench.js';
+import { DIRECTORY, DIR_EVERY, LEARN_EVERY, fetchDirectory, findEntry, pagesFor, readPages, LEARN_PROMPT, cleanLearned, looseId, rootOf, allowLocal } from './learn.js';
 import { resolveLogo } from './logos.js';
 
 export const json = (status, obj, extra) =>
@@ -279,6 +280,7 @@ export class KeyRouter {
   constructor(ctx, env) {
     this.ctx = ctx;
     this.env = env;
+    allowLocal(env.LEARN_LOCAL);
     this.fails = new Map();
     this.rrProvider = {};
     this.rrRoute = {};
@@ -330,8 +332,21 @@ export class KeyRouter {
         // Read the model lists again on the next alarm, so a fixed address shows its models right away.
         await ctx.storage.put(fixed ? { providers: this.cfg.providers, mig: 3, alarmFull: 0 } : { mig: 3 });
       }
+      // Fix 4: limits and free allowances typed in by hand are marked, so automatic updates never replace them.
+      if (((await ctx.storage.get('mig')) || 0) < 4) {
+        for (const [n, p] of Object.entries(this.cfg.providers)) {
+          const pre = PRESETS[n] || {};
+          if (p.limits && JSON.stringify(p.limits) !== JSON.stringify(pre.limits || null)) p.limitsManual = true;
+          if (p.allowance) p.allowanceManual = true;
+        }
+        await ctx.storage.put({ providers: this.cfg.providers, mig: 4 });
+      }
       this.bench = (await ctx.storage.get('bench')) || null;
       this.benchLookup = makeLookup(this.bench);
+      this.benchOR = (await ctx.storage.get('benchOR')) || null;
+      this.orLookup = makeLookup(this.benchOR);
+      this.dir = (await ctx.storage.get('dir')) || null;
+      this.dirSeen = (await ctx.storage.get('dirSeen')) || {};
       this.state = s.get('state') || {};
       this.usage = s.get('usage') || { days: {} };
       this.checks = s.get('checks') || {};
@@ -436,6 +451,16 @@ export class KeyRouter {
       await this.ctx.storage.setAlarm(Date.now() + 2000);
       return;
     }
+    if (this.orDue()) {
+      await this.refreshOR();
+      await this.ctx.storage.setAlarm(Date.now() + 2000);
+      return;
+    }
+    if (this.dirDue()) {
+      await this.refreshDirectory();
+      await this.ctx.storage.setAlarm(Date.now() + 2000);
+      return;
+    }
     const due = this.cfg.alarmFull == null || now >= this.cfg.alarmFull;
     if (due) {
       await this.refreshCatalog(Object.keys(this.providers));
@@ -455,7 +480,10 @@ export class KeyRouter {
       await this.testFree(n);
       await this.ctx.storage.put('checks', this.checks);
     }
-    const next = Math.min(this.cfg.alarmFull, now + CATALOG_EVERY, this.nextRetest());
+    // Read one provider's website or docs per run, one a minute, so it never crowds out real requests.
+    const learn = this.learnDue();
+    if (learn) await this.learnProvider(learn);
+    const next = Math.min(this.cfg.alarmFull, now + CATALOG_EVERY, this.nextRetest(), this.learnDue() ? Date.now() + 60000 : Infinity);
     await this.ctx.storage.setAlarm(Math.max(next, Date.now() + 1000));
   }
 
@@ -464,11 +492,12 @@ export class KeyRouter {
     if (this.env.BENCH_OFF) return false;
     const b = this.bench;
     const tried = this.benchTried || 0;
-    return (!b || Date.now() - b.at > BENCH_EVERY) && Date.now() - tried > 6 * HOUR;
+    return this.benchForce || ((!b || Date.now() - b.at > BENCH_EVERY) && Date.now() - tried > 6 * HOUR);
   }
 
   async refreshBench() {
     this.benchTried = Date.now();
+    this.benchForce = false;
     try {
       const b = await fetchBench(this.env.BENCH_URL);
       this.bench = b;
@@ -482,9 +511,81 @@ export class KeyRouter {
     }
   }
 
+  orDue() {
+    if (this.env.BENCH_OFF || !this.openRouterKey()) return false;
+    const o = this.benchOR;
+    return this.orForce || ((!o || Date.now() - o.at > BENCH_EVERY) && Date.now() - (this.orTried || 0) > 6 * HOUR);
+  }
+
+  // Runs on its own: a Worker call may only make so many outside requests, and LMArena takes most of them.
+  async refreshOR() {
+    this.orTried = Date.now();
+    this.orForce = false;
+    // OpenRouter's benchmarks need an OpenRouter key: use the first one connected.
+    const orKey = this.openRouterKey();
+    if (!orKey) {
+      this.orErr = 'Connect an OpenRouter key to add its benchmarks';
+      return;
+    }
+    try {
+      const o = await fetchOpenRouterBench(this.env.BENCH_OR_URL, orKey);
+      this.benchOR = o;
+      this.orErr = null;
+      this.orLookup = makeLookup(o);
+      await this.ctx.storage.put('benchOR', o);
+      log({ message: 'openrouter benchmarks refreshed', models: o.n });
+    } catch (e) {
+      this.orErr = String(e.message || e).slice(0, 200);
+      log({ message: 'openrouter benchmarks failed', error: this.orErr });
+    }
+  }
+
+  openRouterKey() {
+    for (const [n, p] of Object.entries(this.cfg.providers)) {
+      if (p.enabled === false || !(n === 'openrouter' || /(^|\.)openrouter\.ai$/.test(hostOf(p.baseUrl)))) continue;
+      const k = p.keys.find((x) => x.key);
+      if (k) return k.key;
+    }
+    return null;
+  }
+
+  // Benchmark score for one model and task: LMArena and OpenRouter (Artificial Analysis), averaged when both know it.
+  benchFor(id, task, needTools) {
+    const l = this.benchLookup(id);
+    const a = this.orLookup(id);
+    const parts = [];
+    if (l) parts.push(benchScore(l.row, task));
+    if (a) {
+      let x = aaTaskScore(a.row, task, needTools);
+      const f = this.aaFitNow();
+      if (x != null && f) x = Math.max(0, Math.min(100, f.a * x + f.b));
+      if (x != null) parts.push(x);
+    }
+    if (!parts.length) return null;
+    return { score: Math.round((parts.reduce((s, x) => s + x, 0) / parts.length) * 10) / 10, l, a };
+  }
+
+  // OpenRouter scores mapped onto the LMArena scale (refit whenever either source changes).
+  aaFitNow() {
+    const tag = (this.bench ? this.bench.published + ':' + this.bench.n : '') + '|' + (this.benchOR ? this.benchOR.at : '');
+    if (this.aaFitTag !== tag) {
+      this.aaFitTag = tag;
+      this.aaFit = this.bench && this.benchOR ? fitAA(this.bench, this.benchOR) : null;
+    }
+    return this.aaFit;
+  }
+
   benchInfo() {
     const b = this.bench;
-    return { source: BENCH_SOURCE, published: b ? b.published : null, at: b ? b.at : null, models: b ? b.n : 0, error: this.benchErr || null };
+    const o = this.benchOR;
+    return {
+      source: BENCH_SOURCE,
+      published: b ? b.published : null,
+      at: b ? b.at : null,
+      models: b ? b.n : 0,
+      error: this.benchErr || null,
+      openrouter: { source: OR_SOURCE, at: o ? o.at : null, models: o ? o.n : 0, error: this.orErr || null },
+    };
   }
 
   // How strong a model is for a task. Your own score wins, then the LMArena leaderboard, then an estimate.
@@ -492,13 +593,193 @@ export class KeyRouter {
   strength(name, m, task, needTools) {
     const ov = this.cfg.overrides[name + '/' + m.id] || {};
     if (ov.score != null) return { score: taskScore(Object.assign({}, m, { score: ov.score }), task, needTools), src: 'custom' };
-    const hit = this.benchLookup(m.id);
+    const hit = this.benchFor(m.id, task, needTools);
     if (hit) {
-      let sc = benchScore(hit.row, task);
+      let sc = hit.score;
       if (needTools && m.tools === true) sc += 2;
-      return { score: sc, src: 'lmarena', exact: hit.exact, key: hit.key, rating: hit.row[0] };
+      return { score: sc, src: hit.l && hit.a ? 'both' : hit.l ? 'lmarena' : 'openrouter' };
     }
-    return { score: taskScore(m, task, needTools) - (this.bench ? 6 : 0), src: 'estimate' };
+    return { score: taskScore(m, task, needTools) - (this.bench || this.benchOR ? 6 : 0), src: 'estimate' };
+  }
+
+  // ---------- provider directory and auto setup ----------
+  dirDue() {
+    if (this.env.DIR_OFF) return false;
+    const d = this.dir;
+    return (!d || Date.now() - d.at > DIR_EVERY) && Date.now() - (this.dirTried || 0) > 6 * HOUR;
+  }
+
+  async refreshDirectory() {
+    this.dirTried = Date.now();
+    try {
+      const d = await fetchDirectory(null, this.env.DIR_URL ? { status: this.env.DIR_URL + '/status.json', readme: this.env.DIR_URL + '/README.md' } : null);
+      // First time seen, so new providers can be marked as new.
+      for (const e of d.list) if (!this.dirSeen[e.id]) this.dirSeen[e.id] = this.dir ? Date.now() : 1;
+      this.dir = d;
+      this.dirErr = null;
+      await this.ctx.storage.put({ dir: d, dirSeen: this.dirSeen });
+      log({ message: 'directory refreshed', providers: d.list.length, updated: d.updated });
+      // Keep connected providers in step with what the directory now says.
+      for (const n of Object.keys(this.cfg.providers)) if (this.cfg.providers[n].keys.length) this.applyDirectory(n);
+      await this.saveCfg();
+    } catch (e) {
+      this.dirErr = String(e.message || e).slice(0, 200);
+      log({ message: 'directory failed', error: this.dirErr });
+    }
+  }
+
+  dirEntry(name) {
+    const p = this.cfg.providers[name];
+    return this.dir && p ? findEntry(this.dir.list, name, p.baseUrl) : null;
+  }
+
+  // What the directory knows about a connected provider becomes its automatic settings.
+  applyDirectory(name) {
+    const e = this.dirEntry(name);
+    if (!e) return false;
+    return this.applyLearned(name, { limits: e.limits || undefined, card: e.card || undefined, signupUrl: e.keyUrl || undefined, website: e.website || undefined, freeModels: e.models.map((m) => m.id), notes: e.tagline || undefined, listedFree: e.freeModels || 0 }, 'directory');
+  }
+
+  // Save learned facts. Limits and allowances you set by hand are never replaced; turn off "keep updated" to freeze all.
+  applyLearned(name, L, source) {
+    const p = this.cfg.providers[name];
+    if (!p || !L) return false;
+    const a = p.auto || (p.auto = { sources: {}, log: [] });
+    a.sources = a.sources || {};
+    a.log = a.log || [];
+    const changes = [];
+    const fmtN = (x) => (x == null ? 'none' : Number(x).toLocaleString('en-US'));
+    const on = p.autoUpdate !== false;
+    if (L.limits && on && !p.limitsManual) {
+      const next = Object.assign({}, p.limits || {});
+      for (const [k, v] of Object.entries(cleanLimits(L.limits) || {})) {
+        if (next[k] !== v) changes.push(k.toUpperCase() + ' ' + fmtN(next[k]) + ' → ' + fmtN(v));
+        next[k] = v;
+      }
+      p.limits = cleanLimits(next);
+    }
+    if (L.allowance && on && !p.allowanceManual) {
+      const al = cleanAllowance(L.allowance);
+      if (al && (!p.allowance || p.allowance.tokens !== al.tokens || p.allowance.per !== al.per)) {
+        changes.push('free tokens ' + fmtN(al.tokens) + ' a ' + (al.per === 'once' ? 'sign-up' : al.per));
+        p.allowance = al;
+      }
+    }
+    if (L.card && a.card !== L.card) {
+      if (a.card) changes.push('card: ' + L.card);
+      a.card = L.card;
+    }
+    for (const f of ['signupUrl', 'website', 'notes']) if (L[f]) a[f] = L[f];
+    if (L.listedFree != null) a.listedFree = L.listedFree;
+    if (L.freeModels && L.freeModels.length) {
+      const key = source + 'Models';
+      const before = (a[key] || []).length;
+      a[key] = L.freeModels.slice(0, 200);
+      if (before && a[key].length !== before) changes.push(a[key].length + ' free models listed (was ' + before + ')');
+      a.freeModels = Array.from(new Set([].concat(a.directoryModels || [], a.docsModels || []))).slice(0, 300);
+    }
+    if (L.freeTier != null) a.freeTier = L.freeTier;
+    a.sources[source] = Date.now();
+    a.at = Date.now();
+    if (changes.length) {
+      a.log.unshift({ at: Date.now(), source, text: changes.join(', ') });
+      a.log = a.log.slice(0, 12);
+      log({ message: 'provider settings updated', provider: name, source, changes });
+    }
+    this.rebuild();
+    return changes.length > 0;
+  }
+
+  // Next provider whose website or docs should be read again (at most one per alarm run).
+  learnDue() {
+    if (this.env.LEARN_OFF) return null;
+    for (const [n, p] of Object.entries(this.cfg.providers)) {
+      if (!p.keys.length || p.enabled === false || p.autoUpdate === false) continue;
+      const a = p.auto || {};
+      // Your docs link always; otherwise only providers the directory does not cover (it already has their terms).
+      const want = p.docs || a.learnAsk || !this.dirEntry(n);
+      if (!want || hostOf(p.baseUrl).endsWith('.local')) continue;
+      const last = Math.max(a.learnTried || 0, (a.sources && a.sources.docs) || 0);
+      if (Date.now() - last > (a.learnAsk ? 0 : LEARN_EVERY)) return n;
+    }
+    return null;
+  }
+
+  // Ask one of your free models a question and get its text back. Never spends money.
+  // Only models that are free outright: a sign-up credit is never spent on reading docs.
+  async askModel(messages) {
+    const truly = (t) => {
+      const cat = this.catalog[t.provider];
+      const m = cat && cat.models.find((x) => x.id === t.model);
+      return m && m.free && this.billingOf(t.provider) !== 'paid';
+    };
+    const targets = this.smartTargets('general', 'free', null).filter(truly).slice(0, 6);
+    if (!targets.length) throw new Error('no free model to read with');
+    let last = 'no free model answered';
+    for (const t of targets) {
+      const r = await this.proxy({ model: t.provider + '/' + t.model, messages, temperature: 0, max_tokens: 1500 }, '/chat/completions', AbortSignal.timeout(90000), null);
+      const j = await r.json().catch(() => ({}));
+      const c = r.ok && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
+      if (typeof c === 'string' && c.trim()) return c;
+      last = (j.error && j.error.message) || 'answer ' + r.status;
+    }
+    throw new Error(last);
+  }
+
+  // Read the provider's website or docs and turn its free terms into settings. Skipped when the pages did not change.
+  async learnProvider(name, force) {
+    const p = this.cfg.providers[name];
+    if (!p) throw new Error('Unknown provider: ' + name);
+    const a = p.auto || (p.auto = { sources: {}, log: [] });
+    a.learnTried = Date.now();
+    delete a.learnAsk;
+    this.applyDirectory(name);
+    const urls = pagesFor(p.docs, a.website, p.baseUrl);
+    let result = 'nothing to read';
+    try {
+      const text = urls.length ? await readPages(urls) : '';
+      if (text.length < 200) {
+        a.learnNote = urls.length ? 'The pages had no readable text' : 'No website known';
+      } else {
+        const h = fnv(text);
+        if (!force && a.docsHash === h) {
+          a.learnNote = 'Pages unchanged since ' + new Date(a.sources.docs || Date.now()).toISOString().slice(0, 10);
+          result = 'unchanged';
+        } else {
+          const out = await this.askModel([
+            { role: 'system', content: LEARN_PROMPT },
+            { role: 'user', content: 'Provider: ' + name + '\nAPI base URL: ' + p.baseUrl + '\n\n' + text.slice(0, 32000) },
+          ]);
+          const L = cleanLearned(out, a.website || p.docs || 'https://' + rootOf(p.baseUrl));
+          if (L) {
+            this.applyLearned(name, L, 'docs');
+            a.docsHash = h;
+            a.learnNote = null;
+            result = 'learned';
+          } else a.learnNote = 'Could not read the free terms from the pages';
+        }
+      }
+    } catch (e) {
+      a.learnNote = 'Reading the docs failed: ' + String(e.message || e).slice(0, 120);
+    }
+    a.pages = urls;
+    await this.saveCfg();
+    log({ message: 'provider docs read', provider: name, result, note: a.learnNote || null });
+    return result;
+  }
+
+  discoverView() {
+    const d = this.dir;
+    const mine = Object.entries(this.cfg.providers).filter(([, p]) => p.keys.length);
+    const list = d
+      ? d.list.map((e) => {
+          const conn = mine.find(([n, p]) => findEntry([e], n, p.baseUrl));
+          const preset = Object.keys(PRESETS).find((n) => findEntry([e], n, PRESETS[n].baseUrl));
+          const seen = this.dirSeen[e.id] || 1;
+          return Object.assign({}, e, { connected: conn ? conn[0] : null, preset: preset || null, isNew: seen > 1 && Date.now() - seen < 14 * 86400000, seen });
+        })
+      : [];
+    return { source: DIRECTORY, updated: d ? d.updated : null, at: d ? d.at : null, error: this.dirErr || null, providers: list };
   }
 
   keyRetry() {
@@ -596,6 +877,13 @@ export class KeyRouter {
         const keyless = p.keys.every((k) => !k.key);
         // Without a key nothing can be paid for, so a listed price always counts.
         const all = raw.map((x) => analyze(x, billing, !!PRESETS[name] && !keyless));
+        // Models the provider's docs or the directory name as free count as free when the list shows no price.
+        const hints = new Set(((p.auto && p.auto.freeModels) || []).map(looseId));
+        if (hints.size && billing !== 'paid')
+          for (const m of all) if (!m.free && !m.priced && (hints.has(looseId(m.id)) || hints.has(looseId(m.id.split('/').pop())))) {
+            m.free = true;
+            m.hint = true;
+          }
         const models = all.filter((m) => m.chat && (!keyless || m.free)).slice(0, 1500);
         this.catalog[name] = { at: Date.now(), error: null, total: all.length, models, v: CATALOG_V };
         // The list came back with this key, so an older failed check of it (a 429, a timeout) no longer stands.
@@ -1399,9 +1687,12 @@ export class KeyRouter {
         const key = name + '/' + m.id;
         const ov = this.cfg.overrides[key] || {};
         const hh = health[key];
-        const hit = this.benchLookup(m.id);
-        const base = hit ? toScore(hit.row[0]) : m.score;
-        models.push({ provider: name, id: m.id, free: this.freeOf(name, m), credit: !m.free && this.freeOf(name, m), ctx: m.ctx, tools: m.tools, cats: m.cats, base, score: ov.score != null ? ov.score : base, custom: ov.score != null, src: ov.score != null ? 'custom' : hit ? 'lmarena' : 'estimate', arena: hit ? { rating: hit.row[0], coding: hit.row[1], math: hit.row[2], hard: hit.row[3], long: hit.row[4], vision: hit.row[5], as: hit.key, exact: hit.exact } : null, off: !!ov.off, usable, ok: hh ? hh.ok : 0, fail: hh ? hh.fail : 0 });
+        const bf = this.benchFor(m.id, 'general', false);
+        const hit = bf && bf.l;
+        const aa = bf && bf.a;
+        const base = bf ? bf.score : m.score;
+        const src = ov.score != null ? 'custom' : hit && aa ? 'both' : hit ? 'lmarena' : aa ? 'openrouter' : 'estimate';
+        models.push({ provider: name, id: m.id, free: this.freeOf(name, m), credit: !m.free && this.freeOf(name, m), hint: !!m.hint, ctx: m.ctx, tools: m.tools, cats: m.cats, base, score: ov.score != null ? ov.score : base, custom: ov.score != null, src, arena: hit ? { rating: hit.row[0], coding: hit.row[1], math: hit.row[2], hard: hit.row[3], long: hit.row[4], vision: hit.row[5], as: hit.key, exact: hit.exact } : null, aa: aa ? { intelligence: aa.row[0], coding: aa.row[1], agentic: aa.row[2], as: aa.key, exact: aa.exact } : null, off: !!ov.off, usable, ok: hh ? hh.ok : 0, fail: hh ? hh.fail : 0 });
       }
     }
     const mode = this.cfg.settings.mode;
@@ -1563,6 +1854,13 @@ export class KeyRouter {
         tokens7d: prov7[name] || { p: 0, c: 0, req: 0 },
         limits: p.limits || null,
         modelLimits: p.modelLimits || null,
+        docs: p.docs || null,
+        autoUpdate: p.autoUpdate !== false,
+        limitsManual: !!p.limitsManual,
+        allowanceManual: !!p.allowanceManual,
+        auto: p.auto
+          ? { card: p.auto.card || null, signupUrl: p.auto.signupUrl || null, website: p.auto.website || null, notes: p.auto.notes || null, listedFree: p.auto.listedFree || 0, freeTier: p.auto.freeTier == null ? null : p.auto.freeTier, sources: p.auto.sources || {}, at: p.auto.at || null, log: p.auto.log || [], note: p.auto.learnNote || null, hinted: (p.auto.freeModels || []).length, pages: p.auto.pages || [] }
+          : null,
         keys,
       });
     }
@@ -1686,9 +1984,33 @@ export class KeyRouter {
       return json(200, this.dashboard());
     }
 
+    if (a === 'discover' && !b && m === 'GET') return json(200, this.discoverView());
+    if (a === 'discover' && b === 'refresh' && m === 'POST') {
+      await this.refreshDirectory();
+      if (!this.dir) throw new Error(this.dirErr || 'Could not load the provider directory');
+      return json(200, this.discoverView());
+    }
+    if (a === 'providers' && b && c === 'learn' && m === 'POST') {
+      if (!this.cfg.providers[b]) throw new Error('Unknown provider: ' + b);
+      if (!this.dir) await this.refreshDirectory();
+      const r = await this.learnProvider(b, true);
+      if (this.cfg.providers[b].auto && this.cfg.providers[b].auto.freeModels && this.cfg.providers[b].keys.length) await this.refreshCatalog([b]);
+      return json(200, { result: r, dashboard: this.dashboard() });
+    }
+
     if (a === 'benchmarks' && b === 'refresh' && m === 'POST') {
-      await this.refreshBench();
-      if (!this.bench) throw new Error(this.benchErr || 'Could not load benchmark data');
+      // One source per call (each Worker call may only reach out so many times); the other follows in the background.
+      if (!this.bench) {
+        await this.refreshBench();
+        if (!this.bench) throw new Error(this.benchErr || 'Could not load benchmark data');
+        if (!this.openRouterKey()) await this.refreshOR(); // no request: just notes the missing key
+        else this.orForce = true;
+      } else {
+        await this.refreshOR();
+        this.benchTried = 0;
+        this.benchForce = true;
+      }
+      await this.ctx.storage.setAlarm(Date.now() + 1000);
       return json(200, this.catalogView());
     }
 
@@ -1775,6 +2097,15 @@ export class KeyRouter {
           next.headers = {};
           for (const [hk, hv] of Object.entries(hd)) if (/^[A-Za-z0-9-]{1,64}$/.test(hk) && typeof hv === 'string') next.headers[hk] = hv.slice(0, 200);
         }
+        // Automatic setup: what was learned, where to read, and which settings you set by hand.
+        if (cur.auto) next.auto = cur.auto;
+        const docs = 'docs' in body ? String(body.docs || '').trim().slice(0, 300) : cur.docs;
+        if (docs && !(this.env.LEARN_LOCAL ? /^https?:\/\/\S+$/ : /^https:\/\/\S+$/).test(docs)) throw new Error('Website or docs must start with https://');
+        if (docs) next.docs = docs;
+        if (docs && docs !== cur.docs) (next.auto = Object.assign({}, next.auto || { sources: {}, log: [] })).learnAsk = true;
+        next.autoUpdate = 'autoUpdate' in body ? body.autoUpdate !== false : cur.autoUpdate !== false;
+        next.limitsManual = 'limits' in body ? !!next.limits && JSON.stringify(cur.limits || {}) !== JSON.stringify(next.limits || {}) || (!!cur.limitsManual && !!next.limits) : !!cur.limitsManual;
+        next.allowanceManual = 'allowance' in body ? (!!next.allowance && JSON.stringify(cleanAllowance(cur.allowance) && [cur.allowance.tokens, cur.allowance.per]) !== JSON.stringify([next.allowance.tokens, next.allowance.per])) || (!!cur.allowanceManual && !!next.allowance) : !!cur.allowanceManual;
         const billingChanged = cur.billing !== next.billing || cur.baseUrl !== next.baseUrl;
         // Limits typed in by hand replace what KeyRouter learned, which may have been a wrong guess.
         if ('limits' in body && JSON.stringify(cur.limits || {}) !== JSON.stringify(next.limits || {})) {
@@ -1784,7 +2115,7 @@ export class KeyRouter {
         P[b] = next;
         await this.saveCfg();
         if (billingChanged && next.keys.length) await this.refreshCatalog([b]);
-        if ('allowance' in body && next.keys.length) {
+        if ((('allowance' in body) || (next.auto && next.auto.learnAsk)) && next.keys.length) {
           const al = await this.ctx.storage.getAlarm();
           if (al == null || al > Date.now() + 5000) await this.ctx.storage.setAlarm(Date.now() + 5000);
         }
@@ -1826,7 +2157,14 @@ export class KeyRouter {
         await this.ctx.storage.put('acct', this.acct);
         await this.testFree(b);
         await this.ctx.storage.put({ checks: this.checks, acct: this.acct });
+        // Fill in limits and free models from the directory now; the docs are read in the background.
+        this.applyDirectory(b);
+        const auto = P[b].auto;
+        if (auto && P[b].autoUpdate !== false && (P[b].docs || auto.website) && !(auto.sources && auto.sources.docs)) auto.learnAsk = true;
+        await this.saveCfg();
+        if (auto && auto.freeModels && auto.freeModels.length) await this.refreshCatalog([b]);
         if ((await this.ctx.storage.getAlarm()) == null) await this.ctx.storage.setAlarm(Date.now() + CATALOG_EVERY);
+        if (auto && auto.learnAsk) await this.wake(Date.now() + 3000);
         await this.wake(this.nextRetest());
         return json(200, this.publicConfig());
       }
