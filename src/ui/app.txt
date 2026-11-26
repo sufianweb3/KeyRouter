@@ -129,10 +129,24 @@
     if (THEME === 'light') return false;
     return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
   }
-  function toggleTheme() {
-    THEME = isDark() ? 'light' : 'dark';
-    try { localStorage.setItem('kr_theme', THEME); } catch (e) { /* private mode */ }
-    applyTheme();
+  function toggleTheme(after) {
+    var flip = function () {
+      THEME = isDark() ? 'light' : 'dark';
+      try { localStorage.setItem('kr_theme', THEME); } catch (e) { /* private mode */ }
+      applyTheme();
+      if (after) after();
+    };
+    var root = document.documentElement;
+    if (REDUCED) { flip(); return; }
+    if (document.startViewTransition) {
+      root.classList.add('vt-theme');
+      var vt = document.startViewTransition(flip);
+      vt.finished.then(function () { root.classList.remove('vt-theme'); }, function () { root.classList.remove('vt-theme'); });
+      return;
+    }
+    root.classList.add('theming');
+    flip();
+    setTimeout(function () { root.classList.remove('theming'); }, 420);
   }
   applyTheme();
 
@@ -467,7 +481,7 @@
     return wrap;
   }
   function pill(status, text) {
-    return h('span', { class: 'pill ' + status }, status === 'ready' ? h('span', { class: 'dot' }) : icon(STATUS_ICON[status] || 'minus'), text || STATUS_LABEL[status] || status);
+    return h('span', { class: 'pill ' + status }, h('span', { class: 'dot', 'aria-hidden': 'true' }), text || STATUS_LABEL[status] || status);
   }
   function meter(label, used, max, kind) {
     var pct = max ? Math.min(100, Math.round((used / max) * 100)) : 0;
@@ -615,7 +629,7 @@
   }
   function themeFab() {
     var fab = h('button', { type: 'button', class: 'btn ghost icon', 'aria-label': 'Switch light or dark mode', title: 'Light or dark mode' }, icon(isDark() ? 'sun' : 'moon'));
-    fab.addEventListener('click', function () { toggleTheme(); fab.replaceChildren(icon(isDark() ? 'sun' : 'moon')); syncTheme(); });
+    fab.addEventListener('click', function () { toggleTheme(function () { fab.replaceChildren(icon(isDark() ? 'sun' : 'moon')); syncTheme(); }); });
     return fab;
   }
   function syncTheme() {
@@ -645,7 +659,7 @@
     if (DD_CLOSE) DD_CLOSE();
     if (!PAGES.some(function (p) { return p[0] === PAGE; })) PAGE = 'overview';
     var main = h('main', { class: 'main' });
-    var themeB = h('button', { type: 'button', class: 'nav-btn', 'data-theme-label': '1', 'data-tip': 'Light or dark mode', 'aria-label': 'Switch light or dark mode', onclick: function () { toggleTheme(); syncTheme(); } });
+    var themeB = h('button', { type: 'button', class: 'nav-btn', 'data-theme-label': '1', 'data-tip': 'Light or dark mode', 'aria-label': 'Switch light or dark mode', onclick: function () { toggleTheme(syncTheme); } });
     var shell = h('div', { class: 'shell' + (MINI ? ' mini' : '') });
     var foldB = h('button', { type: 'button', class: 'side-fold', 'aria-label': MINI ? 'Expand sidebar' : 'Collapse sidebar', 'aria-expanded': String(!MINI), 'data-tip': MINI ? 'Expand' : null, onclick: function () {
       MINI = !MINI;
@@ -660,10 +674,9 @@
     shell.append(
       h('nav', { class: 'side', 'aria-label': 'Main' },
         h('div', { class: 'brand' }, h('div', { class: 'logo' }, icon('layers')), h('span', { class: 'brand-name' }, 'KeyRouter'), foldB),
-        PAGES.map(function (p) {
+        h('div', { class: 'side-nav' }, PAGES.map(function (p) {
           return h('button', { type: 'button', class: 'nav-btn' + (PAGE === p[0] ? ' on' : ''), 'aria-current': PAGE === p[0] ? 'page' : null, 'aria-label': p[1], 'data-tip': p[1], onclick: function () { go(p[0]); } }, icon(p[2]), h('span', null, p[1]));
-        }),
-        h('div', { class: 'grow' }),
+        })),
         h('div', { class: 'side-foot' },
           h('div', { class: 'side-mode', title: 'Routing: ' + MODE_LABEL[CFG.settings.mode] }, h('span', { class: 'mode-dot ' + CFG.settings.mode }), h('span', { class: 'mode-txt' }, 'Routing', h('b', null, MODE_LABEL[CFG.settings.mode]))),
           themeB,
@@ -689,15 +702,15 @@
     var refreshB = btn('Refresh list', function () {
       busy(refreshB, 'Loading', api('POST', 'discover/refresh', {})).then(function (d) { DISC = d; draw(); toast('Provider list updated'); }, fail);
     }, 'ghost sm', 'refresh');
-    main.append(header('Discover', 'Providers with free or cheap LLM APIs, from two public directories checked every day. Create an account, then add it in one click.', refreshB), body);
+    main.append(header('Discover', 'Free and low-cost LLM APIs. Create an account, then add it in one click.', refreshB), body);
     var DISC = null;
     var grid = h('div', { class: 'dgrid' });
     var countEl = h('span', { class: 'count' });
     var search = h('input', { type: 'search', name: 'discover-search', placeholder: 'Search providers or models', autocomplete: 'off', spellcheck: 'false', 'aria-label': 'Search the directory', value: DQ,
       oninput: function () { DQ = search.value.trim().toLowerCase(); list(); } });
     var filters = seg([['all', 'All'], ['nocard', 'No card'], ['free', 'Free tier'], ['open', 'Not connected'], ['new', 'New']], DFILTER, function (v) { DFILTER = v; list(); }, 'Filter');
-    var srcLine = h('div', { class: 'hint', style: { margin: '-4px 0 4px' } });
-    body.append(h('div', { class: 'ptools' }, h('div', { class: 'row', style: { gap: '12px', flexWrap: 'wrap' } }, filters, h('div', { class: 'section-label' }, 'Providers', countEl)), h('label', { class: 'search' }, icon('search'), search)), srcLine, grid);
+    var srcLine = h('div', { class: 'dsrc' });
+    body.append(h('div', { class: 'ptools' }, filters, h('label', { class: 'search' }, icon('search'), search)), srcLine, grid);
     function noCard(e) { return /^no\b/i.test(e.card || '') || /registration/i.test(e.card || ''); }
     function list() {
       if (!DISC) return;
@@ -711,22 +724,22 @@
         var hay = (e.name + ' ' + (e.tagline || '') + ' ' + (e.catch || '') + ' ' + (e.baseUrl || '') + ' ' + e.models.map(function (m) { return m.id; }).join(' ')).toLowerCase();
         return hay.indexOf(DQ) >= 0;
       });
-      countEl.textContent = shown.length === all.length ? String(all.length) : shown.length + ' of ' + all.length;
+      countEl.textContent = (shown.length === all.length ? String(all.length) : shown.length + ' of ' + all.length) + ' providers';
       grid.replaceChildren.apply(grid, shown.length ? shown.map(dcard) : [h('div', { class: 'card empty' }, all.length ? 'No provider matches.' : 'The directory is empty right now. Try Refresh list.')]);
     }
     function draw() {
       var srcs = DISC.sources || [DISC.source];
-      var parts = ['Sources: '];
+      var parts = [h('b', null, countEl), ' from '];
       srcs.forEach(function (x, i) {
         if (i) parts.push(' and ');
-        parts.push(h('a', { href: x.url, target: '_blank', rel: 'noopener noreferrer', title: 'Opens in a new tab' }, x.name, icon('ext')));
-        if (x.license) parts.push(' (' + x.license + ')');
-        if (x.ok === false) parts.push(' (not reachable: ' + (x.error || 'error') + ')');
+        parts.push(h('a', { href: x.url, target: '_blank', rel: 'noopener noreferrer', title: 'Opens in a new tab' + (x.license ? ' (' + x.license + ')' : '') }, x.name));
+        if (x.license) parts.push(h('span', { class: 'faint' }, ' (' + x.license + ')'));
+        if (x.ok === false) parts.push(h('span', { class: 'err', title: x.error || '' }, ' (not reachable)'));
       });
-      parts.push(DISC.at ? ', checked ' + ago(DISC.at) + '. ' : '. ');
-      if (DISC.error) parts.push('Last refresh failed: ' + DISC.error + '. ');
-      parts.push('Limits and card rules come from the directories; KeyRouter checks the real ones once you connect.');
+      if (DISC.at) parts.push(h('span', { class: 'faint' }, ' · checked ' + ago(DISC.at)));
+      if (DISC.error) parts.push(h('span', { class: 'err' }, ' · last refresh failed: ' + DISC.error));
       srcLine.replaceChildren.apply(srcLine, parts);
+      srcLine.title = 'Limits and card rules come from the directories. KeyRouter checks the real ones once you connect.';
       list();
     }
     function addName(e) {
@@ -735,35 +748,43 @@
       var n = String(e.id || '').toLowerCase().replace(/[^a-z0-9_-]/g, '-').replace(/^-+/, '').slice(0, 32);
       return NAME_OK.test(n) ? n : 'provider';
     }
+    // App Store style: name, one-line pitch, three facts, then the details that matter.
     function dcard(e) {
       var nm = addName(e);
-      var cardTxt = e.card || 'Unknown';
-      var chips = [
-        e.freeModels ? h('span', { class: 'tag free' }, plural(e.freeModels, 'free model')) : null,
-        e.card ? h('span', { class: 'tag ' + (noCard(e) ? 'free' : 'paidt'), title: 'What sign-up asks for' }, /^no$/i.test(cardTxt) ? 'No card' : cardTxt) : null,
-        e.maxContext ? h('span', { class: 'tag' }, fmtCtx(e.maxContext) + ' context') : null,
-        e.limitText ? h('span', { class: 'tag', title: 'Free limit: ' + e.limitText }, e.limitText.length > 44 ? e.limitText.slice(0, 42) + '…' : e.limitText) : null,
-        e.credits ? h('span', { class: 'tag credit', title: 'Credits' }, e.credits) : null,
-        e.isNew ? h('span', { class: 'tag new' }, 'New') : null,
-        e.status && !/operational|verified|listed/i.test(e.status) ? h('span', { class: 'tag paidt' }, e.status) : null,
-        e.risk ? h('span', { class: 'tag bad', title: 'aifree.dev marks this offer as ' + e.risk + '. Read the details before you sign up.' }, 'Flagged ' + e.risk) : null,
-        e.openai === false ? h('span', { class: 'tag paidt', title: e.protocols || '' }, 'Not OpenAI-compatible') : null];
+      var cardTxt = e.card || '';
+      // Short words for the fact column; the full text is in the tooltip.
+      var signup = !cardTxt ? '-' : /^no\b/i.test(cardTxt) ? 'No card' : /phone/i.test(cardTxt) ? 'Phone' : /registr|account|sign/i.test(cardTxt) ? 'Account' : /card|credit/i.test(cardTxt) ? 'Card' : cardTxt.split(/[\s,(]/)[0];
+      var fact = function (k, v, tip, tone) { return h('div', { class: 'dfact', title: tip || null }, h('span', null, k), h('b', { class: tone || null }, v)); };
+      var line = function (k, v) { return v ? h('div', { class: 'dline', title: v }, h('span', null, k), h('b', null, v)) : null; };
+      var warns = [
+        e.risk ? 'Flagged ' + e.risk + ' by aifree.dev' : null,
+        e.openai === false ? 'Not OpenAI-compatible' : null,
+        e.status && !/operational|verified|listed/i.test(e.status) ? cap(e.status) : null].filter(Boolean);
+      var catchEl = e.catch ? h('p', { class: 'dc-catch', tabindex: '0', role: 'button', 'aria-expanded': 'false', title: 'Show all',
+        onclick: function () { var o = catchEl.classList.toggle('open'); catchEl.setAttribute('aria-expanded', String(o)); },
+        onkeydown: function (ev) { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); catchEl.click(); } } }, h('b', null, 'Catch '), e.catch) : null;
       var addB = btn('Add', function () {
         PREFILL = { name: nm, baseUrl: e.baseUrl, docs: e.website };
         go('providers');
       }, 'orange sm', 'plus', e.baseUrl ? null : { disabled: true, title: 'No public API address listed' });
       return h('article', { class: 'card dcard' + (e.connected ? ' on' : '') },
-        h('div', { class: 'dc-head' }, plogo(nm, '', e.baseUrl || e.website), h('div', { class: 'dc-t' }, h('h3', null, e.name), h('div', { class: 'hint dc-url' }, h('span', null, (e.baseUrl || e.website || '').replace(/^https:\/\//, '')),
-            e.offerUrl ? h('a', { class: 'dc-src', href: e.offerUrl, target: '_blank', rel: 'noopener noreferrer', title: 'Offer details on aifree.dev (CC BY 4.0)' }, 'aifree.dev', icon('ext')) : null)),
-          e.connected ? h('span', { class: 'pill ready' }, icon('check'), 'Connected') : null),
+        h('div', { class: 'dc-head' }, plogo(nm, '', e.baseUrl || e.website),
+          h('div', { class: 'dc-t' }, h('h3', null, e.name, e.isNew ? h('span', { class: 'dc-new' }, 'New') : null), h('div', { class: 'dc-url', title: e.baseUrl || e.website || '' }, (e.baseUrl || e.website || '').replace(/^https:\/\//, ''))),
+          e.connected ? pill('ready', 'Connected') : null),
         e.tagline ? h('p', { class: 'dc-tag' }, e.tagline) : null,
-        e.catch ? h('p', { class: 'dc-catch' }, h('b', null, 'Catch: '), e.catch) : null,
-        h('div', { class: 'dc-chips' }, chips),
-        e.models.length ? h('div', { class: 'dc-models' }, e.models.slice(0, 3).map(function (m) { return h('div', { class: 'dc-m' }, h('span', { class: 'mono' }, m.id), m.limit && m.limit !== '-' ? h('span', { class: 'faint' }, m.limit) : null); })) : null,
+        h('div', { class: 'dfacts' },
+          fact('Free models', e.freeModels ? fmt(e.freeModels) : '-', e.models.length ? e.models.slice(0, 8).map(function (m) { return m.id; }).join(', ') + (e.models.length > 8 ? ' and more' : '') : null),
+          fact('Sign-up', signup, 'Sign-up asks for: ' + (cardTxt || 'unknown'), noCard(e) ? 'good' : null),
+          fact('Context', e.maxContext ? fmtCtx(e.maxContext) : '-')),
+        line('Free limit', e.limitText),
+        line('Credits', e.credits),
+        warns.length ? h('div', { class: 'dc-warn' + (e.risk ? ' bad' : '') }, icon('alert'), h('span', null, warns.join(' · '))) : null,
+        catchEl,
         h('div', { class: 'dc-foot' },
-          e.keyUrl ? h('a', { class: 'btn ghost sm', href: e.keyUrl, target: '_blank', rel: 'noopener noreferrer', title: 'Opens ' + e.name + ' in a new tab' }, 'Create account', icon('ext')) : null,
+          e.keyUrl ? h('a', { class: 'dc-link', href: e.keyUrl, target: '_blank', rel: 'noopener noreferrer', title: 'Create an account at ' + e.name + ' (opens in a new tab)' }, 'Sign up', icon('ext')) : null,
+          e.offerUrl ? h('a', { class: 'dc-src', href: e.offerUrl, target: '_blank', rel: 'noopener noreferrer', title: 'Offer details on aifree.dev (CC BY 4.0)' }, 'aifree.dev', icon('ext')) : null,
           h('span', { class: 'sp' }),
-          e.connected ? btn('Open', function () { EXPANDED[e.connected] = true; NEWLY = e.connected; go('providers'); }, 'soft sm', 'chevR') : addB));
+          e.connected ? btn('Open', function () { EXPANDED[e.connected] = true; NEWLY = e.connected; go('providers'); }, 'soft sm') : addB));
     }
     function fmtCtx(n) { return n >= 1000000 ? Math.round(n / 100000) / 10 + 'M' : Math.round(n / 1000) + 'K'; }
     grid.append(h('div', { class: 'card empty' }, 'Loading the provider directory…'));
@@ -832,13 +853,13 @@
       var tokBig = h('div', { class: 'big' });
       var reqBig = h('div', { class: 'big' });
       if (first) { countUp(tokBig, tok(t.today)); countUp(reqBig, t.today.req); } else { tokBig.textContent = fmt(tok(t.today)); reqBig.textContent = fmt(t.today.req); }
-      body.replaceChildren(
+      body.replaceChildren.apply(body, [
         h('div', { class: 'grid g4' },
           kpi('orange', 'Tokens today', 'bolt', tokBig, [h('span', { class: 'chip' }, fmt(t.today.p) + ' in'), h('span', { class: 'chip' }, fmt(t.today.c) + ' out')]),
           kpi('', 'Requests today', 'pulse', reqBig, plural(t.week.req, 'request') + ' this week'),
-          kpi('good', 'Free models ready', 'check', fmt(readyFree), 'Tested and working on ' + plural(ready.length, 'provider')),
+          kpi('good', 'Free models ready', 'check', fmt(readyFree), 'Working on ' + plural(ready.length, 'provider')),
           kpi('dark', 'Providers ready', 'server', h('div', { class: 'big' }, String(ready.length), h('small', null, '/ ' + keyed.length)),
-            problems.length ? plural(problems.length, 'provider') + (problems.length === 1 ? ' needs' : ' need') + ' a look' : 'Everything connected is healthy')),
+            problems.length ? plural(problems.length, 'provider') + (problems.length === 1 ? ' needs' : ' need') + ' a look' : 'All healthy')),
         capacityRow(d.capacity, first),
         attentionCard(d),
         h('div', { class: 'grid g21 mt' + (first ? ' grow' : '') },
@@ -848,28 +869,34 @@
           h('section', { class: 'card' },
             h('div', { class: 'card-head' }, h('div', null, h('h3', null, 'By provider'), h('div', { class: 'sub' }, 'Tokens, last 7 days'))),
             shareList(d.byProvider))),
-        h('div', { class: 'grid g2 mt' + (first ? ' grow' : '') },
-          h('section', { class: 'card' },
-            h('div', { class: 'card-head' }, h('h3', null, 'Provider health'), btn('Manage', function () { go('providers'); }, 'soft sm')),
-            h('div', { class: 'list' }, keyed.map(function (p) {
-              return h('button', { type: 'button', class: 'li', onclick: function () { go('providers'); } },
-                plogo(p.name),
-                h('div', { style: { minWidth: '0' } }, h('div', { class: 't', style: { textTransform: 'capitalize' } }, p.name), h('div', { class: 's' }, p.statusText)),
-                h('div', { class: 'r' }, pill(p.status)));
-            }))),
-          h('section', { class: 'card' },
-            h('div', { class: 'card-head' }, h('h3', null, 'Agent keys today'), btn('Manage', function () { go('keys'); }, 'soft sm')),
-            d.agentKeys.length ? h('div', { class: 'list' }, d.agentKeys.map(function (k) {
-              return h('div', { class: 'li' },
-                h('div', { class: 'avatar dark' }, k.label.slice(0, 2)),
-                h('div', { style: { flex: '1', minWidth: '0' } },
-                  h('div', { class: 'row', style: { justifyContent: 'space-between', gap: '8px' } }, h('span', { class: 't' }, k.label), h('span', { class: 's num' }, plural(k.today, 'request'))),
-                  h('div', { class: 's' }, (k.mode === 'mixed' ? 'Free + paid' : MODE_LABEL[k.mode] || 'Follows settings') + ' · ' + fmt(tok(k.tokensToday)) + ' tokens'),
-                  k.dailyCap ? h('div', { style: { marginTop: '8px' } }, h('div', { class: 'track' + (k.today >= k.dailyCap ? ' red' : k.today / k.dailyCap >= 0.8 ? '' : ' ink') }, h('i', { style: { width: Math.min(100, Math.max(k.today ? 2 : 0, (k.today / k.dailyCap) * 100)) + '%' } })), h('div', { class: 'hint', style: { marginTop: '4px' } }, fmt(k.today) + ' of ' + fmt(k.dailyCap) + ' a day')) : null));
-            })) : h('div', { class: 'empty' }, h('p', null, 'No agent keys yet.'), btn('Create one', function () { go('keys'); }, 'soft sm', 'plus')))));
+        apiKeysCard(d.agentKeys, first),
+        h('section', { class: 'card mt' + (first ? ' grow' : '') },
+          h('div', { class: 'card-head' }, h('div', null, h('h3', null, 'Provider health'), h('div', { class: 'sub' }, plural(ready.length, 'provider') + ' ready of ' + keyed.length)), btn('Manage', function () { go('providers'); }, 'soft sm')),
+          h('div', { class: 'hgrid' }, keyed.map(function (p) {
+            return h('button', { type: 'button', class: 'hrow', onclick: function () { go('providers'); } },
+              plogo(p.name),
+              h('div', { class: 'hrow-t' }, h('div', { class: 't' }, cap(p.name)), h('div', { class: 's', title: p.statusText }, p.statusText)),
+              pill(p.status));
+          })))].filter(Boolean));
     }
     draw(true);
     poll(draw);
+  }
+
+  // Agent keys used today: one row per key with its daily limit as a bar.
+  function apiKeysCard(keys, first) {
+    return h('section', { class: 'card mt' + (first ? ' grow' : '') },
+      h('div', { class: 'card-head' }, h('div', null, h('h3', null, 'API Keys'), h('div', { class: 'sub' }, keys.length ? 'Used today by your agents' : 'Keys your agents use to call KeyRouter')), btn('Manage', function () { go('keys'); }, 'soft sm')),
+      keys.length ? h('div', { class: 'krows' }, keys.map(function (k) {
+        var cap2 = k.dailyCap;
+        var tone = cap2 && k.today >= cap2 ? ' red' : cap2 && k.today / cap2 >= 0.8 ? ' warn' : '';
+        return h('div', { class: 'krow' },
+          h('div', { class: 'avatar dark' }, k.label.slice(0, 2)),
+          h('div', { class: 'krow-t' }, h('div', { class: 't' }, k.label), h('div', { class: 's' }, k.mode === 'mixed' ? 'Free + paid' : MODE_LABEL[k.mode] || 'Follows settings')),
+          h('div', { class: 'krow-m' }, cap2 ? h('div', { class: 'track' + tone, role: 'meter', 'aria-label': k.label + ' requests today', 'aria-valuenow': String(k.today), 'aria-valuemax': String(cap2) }, h('i', { style: { width: Math.min(100, Math.max(k.today ? 2 : 0, (k.today / cap2) * 100)) + '%' } })) : h('div', { class: 's' }, 'No daily limit')),
+          h('div', { class: 'krow-n num' }, h('b', null, fmt(k.today)), cap2 ? h('span', null, ' / ' + fmt(cap2)) : h('span', null, k.today === 1 ? ' request' : ' requests')),
+          h('div', { class: 'krow-n num' }, h('b', null, fmt(tok(k.tokensToday))), h('span', null, ' tokens')));
+      })) : h('div', { class: 'empty' }, h('p', null, 'No API keys yet.'), btn('Create one', function () { go('keys'); }, 'soft sm', 'plus')));
   }
 
   // Two cards: free requests and free tokens left today, across providers with free models.
@@ -979,7 +1006,7 @@
       names.forEach(function (n) { chain = chain.then(function () { return api('POST', 'providers/' + encodeURIComponent(n) + '/check').then(function (d) { DASH = d; }); }); });
       busy(checkAll, 'Checking', chain).then(function () { toast('All providers checked'); list(); }, fail);
     }, 'ghost sm', 'refresh');
-    main.append(header('Providers', 'Paste a key once. KeyRouter spots the provider, checks the key, reads which models are free and tests one.', checkAll), body);
+    main.append(header('Providers', 'Paste a key. KeyRouter finds the provider, checks the key and tests a free model.', checkAll), body);
     var listBox = h('div', { class: 'plist' });
     var countEl = h('span', { class: 'count' });
     var search = h('input', { type: 'search', name: 'provider-search', placeholder: 'Search providers', autocomplete: 'off', spellcheck: 'false', 'aria-label': 'Search connected providers', value: PQ,
@@ -1030,13 +1057,12 @@
       oninput: update, onkeydown: function (e) { if (e.key === 'Enter') connect(); } });
     var connectB = btn('Connect', connect, 'orange', 'plus');
     var info = h('div', { class: 'cinfo', 'aria-live': 'polite' });
-    var docsIn = h('input', { type: 'url', name: 'custom-docs', placeholder: 'https://example.com/docs (optional)', autocomplete: 'off', spellcheck: 'false', 'aria-label': 'Website or docs' });
+    var docsIn = h('input', { type: 'url', name: 'custom-docs', placeholder: 'Optional', autocomplete: 'off', spellcheck: 'false', 'aria-label': 'Website or docs' });
     var billRow = h('div', { class: 'acc' }, h('div', null, h('div', { class: 'acc-inner flush' },
-      h('div', { class: 'bill-row' }, h('span', { class: 'lbl' }, 'Pricing'),
-        seg([['per-model', 'Auto'], ['free', 'All free'], ['paid', 'All paid']], bill, function (v) { bill = v; }, 'Pricing'),
-        h('span', { class: 'hint' }, 'Auto reads each model\'s price. A model with a listed price is never treated as free.')),
-      h('div', { class: 'bill-row' }, h('span', { class: 'lbl' }, 'Website or docs'), docsIn,
-        h('span', { class: 'hint' }, 'Optional. KeyRouter reads it for free models and limits, and checks again every week. Without it, it reads the site behind the base URL.')))));
+      h('div', { class: 'copts' },
+        h('div', { class: 'field' }, h('span', null, 'Pricing'), seg([['per-model', 'Auto'], ['free', 'All free'], ['paid', 'All paid']], bill, function (v) { bill = v; }, 'Pricing')),
+        h('label', { class: 'field' }, h('span', null, 'Website or docs'), docsIn)),
+      h('div', { class: 'hint copts-hint' }, 'Auto counts a model as free only when it has no listed price. KeyRouter reads the docs for free models and limits, and checks them weekly.'))));
 
     function typed() { return nameIn.value.trim().toLowerCase(); }
     // Base URL KeyRouter already knows for this name, if any.
@@ -1071,14 +1097,14 @@
       var msg = null;
       var tone = '';
       if (nameBad) { msg = 'Use lowercase letters, numbers, - or _ for the name (no spaces).'; tone = 'bad'; }
-      else if (!n) msg = v ? 'KeyRouter can\'t tell the provider from this key. Pick it from the list or type a new name.' : 'Paste a key. Most providers are detected from the key, or pick one from the list.';
+      else if (!n) msg = v ? 'Can\'t tell the provider from this key. Pick one from the list or type a new name.' : null;
       else if (fixed) {
         msg = (auto ? 'Detected ' + cap(n) + ' from the key. ' : '') +
           (hasKeys(n) ? 'Adds another key to ' + cap(n) + '.' : keyless && !v ? 'No key needed: press Connect.' : (pre && pre.note) || 'Base URL filled in for you.');
         tone = 'ok';
-      } else msg = 'New provider "' + n + '". Add its OpenAI-compatible base URL, usually ending in /v1.';
-      info.className = 'cinfo ' + tone;
-      info.replaceChildren(icon(tone === 'bad' ? 'alert' : tone === 'ok' ? 'check' : 'info'), h('span', null, msg));
+      } else msg = 'New provider. Add its OpenAI-compatible base URL, usually ending in /v1.';
+      info.className = 'cinfo ' + tone + (msg ? '' : ' hide');
+      info.replaceChildren(icon(tone === 'bad' ? 'alert' : tone === 'ok' ? 'check' : 'info'), h('span', null, msg || ''));
     }
 
     // ---- provider list under the name field
@@ -1231,20 +1257,20 @@
       setTimeout(function () { keyIn.focus(); }, 60);
     }
     update();
+    var keyless = keylessRow();
     return h('section', { class: 'card connect' + (flash ? ' flash' : '') },
-      h('div', { class: 'card-head' }, h('div', null, h('h3', null, 'Connect a provider'), h('div', { class: 'sub' }, 'Your key stays on Cloudflare. Agents only ever get an agent key.'))),
-      h('div', { class: 'stack', style: { gap: '12px' } },
+      h('div', { class: 'card-head' }, h('h3', null, 'Connect a provider'),
+        h('div', { class: 'getkeys' }, h('span', null, 'Get a free key'), ['gemini', 'groq', 'openrouter', 'cerebras', 'mistral'].map(function (n) {
+          return h('a', { href: KEY_PAGES[n], target: '_blank', rel: 'noopener noreferrer', title: 'Opens ' + cap(n) + ' in a new tab' }, cap(n));
+        }))),
+      h('div', { class: 'cbody' },
         h('div', { class: 'cgrid' },
           field('API key', keyIn, null, 'ckey'),
           h('div', { class: 'field' }, h('span', null, 'Provider'), combo),
           field('Base URL', urlIn),
           connectB),
         info, billRow,
-        h('div', { class: 'cfoot' },
-          h('div', { class: 'getkeys' }, 'Free keys:', ['gemini', 'groq', 'openrouter', 'cerebras', 'mistral'].map(function (n) {
-            return h('a', { href: KEY_PAGES[n], target: '_blank', rel: 'noopener noreferrer', title: 'Opens ' + n + ' in a new tab' }, n, icon('ext'));
-          })),
-          keylessRow())));
+        keyless ? h('div', { class: 'cfoot' }, keyless) : null));
   }
 
   // Providers that work without any key: one click to turn on.
@@ -1252,7 +1278,7 @@
     var names = Object.keys(CFG.presets).filter(function (n) { return CFG.presets[n].keyless && !(CFG.providers[n] && CFG.providers[n].keys.length); });
     if (!names.length) return null;
     return h('div', { class: 'keyless' },
-      h('span', { class: 'hint' }, 'No key needed:'),
+      h('span', { class: 'hint' }, 'No key needed'),
       names.map(function (n) {
         var b = btn(cap(n), function () {
           busy(b, 'Turning on', api('POST', 'providers/' + encodeURIComponent(n) + '/keys', { keyless: true }).then(function () { return loadAll(); })).then(function () {
@@ -1337,11 +1363,10 @@
       plogo(p.name),
       h('div', { class: 'ttl' }, h('h3', null, p.name), h('div', { class: 'url', title: p.baseUrl }, p.baseUrl.replace(/^https?:\/\//, '') + ' · models updated ' + ago(p.catalogAt))),
       h('div', { class: 'pmini' },
-        h('span', { class: 'tag free' }, fmt(p.free) + ' free'),
-        h('span', { class: 'tag paidt' }, fmt(p.paid) + ' paid'),
-        p.allowance && p.allowance.left > 0 ? h('span', { class: 'tag credit', title: 'Free token allowance active' }, 'credit') : null,
-        h('span', { class: 'tag' }, p.keyless ? 'no key' : plural(p.keys.length, 'key'))),
-      pill(p.status),
+        h('span', { class: 'pfig' + (p.free ? ' good' : '') }, h('b', { class: 'num' }, fmt(p.free)), h('small', null, p.allowance && p.allowance.left > 0 ? 'free + credit' : 'free')),
+        h('span', { class: 'pfig' }, h('b', { class: 'num' }, fmt(p.paid)), h('small', null, 'paid')),
+        h('span', { class: 'pfig' }, h('b', { class: 'num' }, p.keyless ? '-' : String(p.keys.length)), h('small', null, p.keyless ? 'no key' : p.keys.length === 1 ? 'key' : 'keys'))),
+      h('span', { class: 'pstat' }, pill(p.status)),
       h('span', { class: 'chev', 'aria-hidden': 'true' }, icon('chevron')));
     card = h('article', { class: 'card pcard' + (open ? ' open' : '') + (NEWLY === p.name ? ' new' : '') }, head, fold);
     return card;
@@ -1524,6 +1549,13 @@
   }
 
   // ---------- models ----------
+  // Tasks a model is good at, as one quiet line: "Reasoning, coding, vision".
+  function goodAt(cats) {
+    var c = cats.filter(function (x) { return x !== 'general'; }).map(function (x) { return (TASK_LABEL[x] || x).toLowerCase(); });
+    if (!c.length) return h('span', { class: 'faint' }, 'General chat');
+    var t = c.join(', ');
+    return h('span', { class: 'goodat', title: t }, t.charAt(0).toUpperCase() + t.slice(1));
+  }
   function viewModels(main) {
     var body = page(true);
     body.append(h('div', { class: 'card empty' }, h('span', { class: 'spin' }), ' Loading models'));
@@ -1560,15 +1592,15 @@
           } });
           return h('tr', null,
             h('td', null, h('div', { class: 'row nowrap', style: { gap: '10px' } }, plogo(m.provider, 'sm'), h('div', { style: { minWidth: '0' } }, h('div', { class: 'mono', style: { fontWeight: '600' } }, m.id), h('div', { class: 'hint' }, cap(m.provider))))),
-            h('td', null, h('span', { class: 'tag ' + (m.credit ? 'credit' : m.free ? 'free' : 'paidt'), title: m.credit ? 'Paid model, free while the token allowance lasts' : null }, m.credit ? 'Credit' : m.free ? 'Free' : 'Paid')),
-            h('td', null, m.cats.filter(function (x) { return x !== 'general'; }).map(function (x) { return h('span', { class: 'tag' }, x); })),
-            h('td', { class: 'n' }, m.ctx ? fmt(m.ctx) : h('span', { class: 'faint' }, '-')),
-            h('td', { class: 'n' }, m.ok || m.fail ? h('span', null, fmt(m.ok), h('span', { class: 'faint' }, ' / ' + fmt(m.fail))) : h('span', { class: 'faint' }, '0'),
-              m.lat ? h('div', { class: 'hint num', title: 'Typical time to start answering, from your own calls' }, fmtMs(m.lat)) : null),
+            h('td', null, h('span', { class: 'price ' + (m.credit ? 'credit' : m.free ? 'free' : 'paid'), title: m.credit ? 'Paid model, free while the token allowance lasts' : null }, m.credit ? 'Credit' : m.free ? 'Free' : 'Paid')),
+            h('td', null, goodAt(m.cats)),
+            h('td', { class: 'n num' }, m.ctx ? fmt(m.ctx) : h('span', { class: 'faint' }, '-')),
+            h('td', { class: 'n num', title: 'Worked / failed on your own calls' }, m.ok || m.fail ? h('span', null, fmt(m.ok), h('span', { class: 'faint' }, ' / ' + fmt(m.fail))) : h('span', { class: 'faint' }, '-')),
+            h('td', { class: 'n num', title: 'Typical time to start answering, from your own calls' }, m.lat ? fmtMs(m.lat) : h('span', { class: 'faint' }, '-')),
             h('td', null, h('div', { class: 'row nowrap', style: { gap: '6px' } }, score, src, m.custom ? btn('Reset', function () { api('PUT', 'overrides', { key: key, score: null }).then(function (nc) { CAT = nc; draw(false); }, fail); }, 'sm soft') : null)),
             h('td', null, sw(!m.off, function (on) { api('PUT', 'overrides', { key: key, off: !on }).then(function (nc) { CAT = nc; toast(on ? 'Model on' : 'Model off: never used'); }, fail); }, 'Use ' + m.id)));
         }));
-        if (!rows.length) tbody.append(h('tr', null, h('td', { colspan: '7', class: 'empty' }, 'No models match.')));
+        if (!rows.length) tbody.append(h('tr', null, h('td', { colspan: '8', class: 'empty' }, 'No models match.')));
       }
       table();
       var free = provs.map(function (n) { return [n, c.models.filter(function (m) { return m.provider === n && m.free; }).length]; }).filter(function (x) { return x[1]; });
@@ -1592,7 +1624,7 @@
               list.length ? h('div', { class: 'stack', style: { gap: '10px' } }, list.slice(0, 4).map(function (t, i) {
                 return h('div', { class: 'row nowrap', style: { gap: '10px' } }, h('span', { class: 'rank' + (i ? '' : ' first') }, i + 1),
                   h('span', { class: 'mono', style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: '1' }, title: t.src === 'estimate' ? 'Estimated score, not on the LMArena leaderboard' : null }, t.model, t.src === 'estimate' ? h('span', { class: 'faint' }, ' est.') : null),
-                  h('span', { class: 'tag ' + (t.free ? 'free' : 'paidt') }, t.provider));
+                  h('span', { class: 'pick-prov' + (t.free ? '' : ' paid'), title: t.free ? 'Free' : 'Paid' }, cap(t.provider)));
               })) : h('div', { class: 'hint' }, 'No model for this yet'));
           }))),
         benchBar(c),
@@ -1602,8 +1634,8 @@
             sel([['all', 'All providers']].concat(provs.map(function (n) { return [n, cap(n)]; })), filt.prov, function (v) { filt.prov = v; table(); }, { 'aria-label': 'Provider' }),
             sel([['all', 'All tasks']].concat(CFG.categories.map(function (x) { return [x, TASK_LABEL[x] || x]; })), filt.cat, function (v) { filt.cat = v; table(); }, { 'aria-label': 'Task' }),
             h('span', { class: 'sp' }), q),
-          h('div', { class: 'tbl-wrap' }, h('table', null,
-            h('thead', null, h('tr', null, h('th', null, 'Model'), h('th', null, 'Price'), h('th', null, 'Good at'), h('th', { class: 'n' }, 'Context'), h('th', { class: 'n' }, 'Worked / failed', h('div', { class: 'th-sub' }, 'and speed')), h('th', null, 'Score'), h('th', null, 'Use'))),
+          h('div', { class: 'tbl-wrap' }, h('table', { class: 'mtable' },
+            h('thead', null, h('tr', null, h('th', null, 'Model'), h('th', null, 'Price'), h('th', null, 'Good at'), h('th', { class: 'n' }, 'Context'), h('th', { class: 'n', title: 'Worked / failed on your own calls' }, 'Worked'), h('th', { class: 'n' }, 'Speed'), h('th', null, 'Score'), h('th', null, 'Use'))),
             tbody))));
     }
     function benchBar(c) {
@@ -1644,7 +1676,7 @@
       var chartBox = h('div');
       function chart(anim) { chartBox.replaceChildren(barChart(d.series, metric === 'req' ? 'req' : null, anim)); }
       chart(first);
-      body.replaceChildren(
+      body.replaceChildren.apply(body, [
         capacityRow(d.capacity, first, true),
         h('div', { class: 'grid g3 mt' },
           usageTile('orange', 'Today', t.today, first),
@@ -1657,10 +1689,9 @@
           est ? h('div', { class: 'hint', style: { marginTop: '14px' } }, plural(est, 'reply') + ' had no token count from the provider, so those are estimated at about 4 characters per token.') : null,
           d.cache && (d.cache.week || (d.settings && d.settings.cacheSecs)) ? h('div', { class: 'hint', style: { marginTop: '8px' } }, 'Answered from memory: ' + plural(d.cache.today, 'request') + ' today, ' + fmt(d.cache.week) + ' this week.') : null),
         healthCard(d),
-        h('div', { class: 'grid g2 mt' },
-          tableCard('Providers', 'Last 7 days', ['Provider', 'In', 'Out', 'Requests'], d.byProvider.map(function (r) { return [cap(r.name), fmt(r.p), fmt(r.c), fmt(r.req)]; })),
-          tableCard('Agent keys', 'Last 7 days', ['Key', 'Tokens', 'Today', 'Requests'], keysRows.map(function (r) { return [r.label, fmt(tok(r.u)), r.today ? fmt(tok(r.today)) : '-', fmt(r.u.req)]; }))),
-        h('div', { class: 'mt' }, tableCard('Top models', 'Last 7 days, by tokens', ['Model', 'In', 'Out', 'Requests'], d.topModels.map(function (r) { return [h('span', { class: 'mono' }, r.key), fmt(r.p), fmt(r.c), fmt(r.req)]; }))));
+        h('div', { class: 'mt' }, tableCard('Agent keys', 'Last 7 days', ['Key', 'Tokens', 'Tokens today', 'Requests'], keysRows.map(function (r) { return [r.label, fmt(tok(r.u)), r.today ? fmt(tok(r.today)) : '-', fmt(r.u.req)]; }))),
+        h('div', { class: 'mt' }, tableCard('Providers', 'Last 7 days', ['Provider', 'Tokens in', 'Tokens out', 'Requests'], d.byProvider.map(function (r) { return [h('span', { class: 'with-logo' }, plogo(r.name, 'xs'), cap(r.name)), fmt(r.p), fmt(r.c), fmt(r.req)]; }))),
+        h('div', { class: 'mt' }, tableCard('Top models', 'Last 7 days, by tokens', ['Model', 'Tokens in', 'Tokens out', 'Requests'], d.topModels.map(function (r) { return [h('span', { class: 'mono' }, r.key), fmt(r.p), fmt(r.c), fmt(r.req)]; })))].filter(Boolean));
     }
     draw(true);
     poll(draw);
@@ -1716,7 +1747,7 @@
   function viewKeys(main) {
     var body = page(true);
     var base = location.origin + '/v1';
-    main.append(header('Agent keys', 'Give each agent its own key. Provider keys never leave Cloudflare.'), body);
+    main.append(header('Agent keys', 'Give each agent its own key. Provider keys never leave your server.'), body);
     var label = h('input', { type: 'text', name: 'agent', placeholder: 'e.g. my-agent', autocomplete: 'off' });
     var capIn = numIn('', { name: 'cap', placeholder: 'No limit' });
     var tokCapIn = numIn('', { name: 'tokcap', placeholder: 'No limit' });
@@ -1741,8 +1772,8 @@
       var ks = DASH.agentKeys;
       listBox.replaceChildren(ks.length ? h('section', { class: 'card mt' },
         h('div', { class: 'card-head' }, h('h3', null, 'Your agent keys'), h('span', { class: 'chip' }, String(ks.length))),
-        h('div', { class: 'tbl-wrap' }, h('table', null,
-          h('thead', null, h('tr', null, h('th', null, 'Agent'), h('th', null, 'Models'), h('th', null, 'Task'), h('th', null, 'Today'), h('th', null, 'Requests a day'), h('th', null, 'Tokens a day'), h('th', null, 'On'), h('th'))),
+        h('div', { class: 'tbl-wrap' }, h('table', { class: 'ktable' },
+          h('thead', null, h('tr', null, h('th', null, 'Agent'), h('th', null, 'Models'), h('th', null, 'Task'), h('th', null, 'Today'), h('th', { title: 'Requests a day' }, 'Request limit'), h('th', { title: 'Tokens a day' }, 'Token limit'), h('th', null, 'On'), h('th'))),
           h('tbody', null, ks.map(function (k) {
             var capBox = numIn(k.dailyCap || '', { placeholder: 'None', 'aria-label': 'Daily limit for ' + k.label });
             capBox.addEventListener('change', function () { act(api('PATCH', 'router-keys/' + k.id, { dailyCap: capBox.num }), 'Limit saved'); });
@@ -1754,8 +1785,8 @@
               h('td', { class: 'name' }, h('div', { style: { fontWeight: '700' } }, k.label), h('div', { class: 'hint' }, 'Created ' + ago(k.created)),
                 rd && oldDays > rd ? h('span', { class: 'tag paidt', title: 'Older than your ' + rd + '-day reminder. Create a new key and delete this one.' }, oldDays + ' days old') : null),
               h('td', null, sel([['free', 'Free only'], ['mixed', 'Free + paid'], ['best', 'Strongest first'], ['inherit', 'Follow settings']], k.mode, function (v) { act(api('PATCH', 'router-keys/' + k.id, { mode: v }), 'Saved'); }, { 'aria-label': 'Models for ' + k.label })),
-              h('td', null, sel(Object.keys(TASK_LABEL).map(function (x) { return [x, TASK_LABEL[x]]; }), k.task, function (v) { act(api('PATCH', 'router-keys/' + k.id, { task: v }), 'Saved'); }, { 'aria-label': 'Task for ' + k.label })),
-              h('td', { style: { minWidth: '172px' } }, meter('Requests', k.today, k.dailyCap), k.tokenCap ? h('div', { style: { marginTop: '8px' } }, meter('Tokens', tok(k.tokensToday), k.tokenCap)) : h('div', { class: 'hint num', style: { marginTop: '5px' } }, fmt(tok(k.tokensToday)) + ' tokens')),
+              h('td', null, sel(Object.keys(TASK_LABEL).map(function (x) { return [x, x === 'detect' ? 'Auto-detect' : TASK_LABEL[x]]; }), k.task, function (v) { act(api('PATCH', 'router-keys/' + k.id, { task: v }), 'Saved'); }, { 'aria-label': 'Task for ' + k.label })),
+              h('td', { style: { minWidth: '150px' } }, meter('Requests', k.today, k.dailyCap), k.tokenCap ? h('div', { style: { marginTop: '8px' } }, meter('Tokens', tok(k.tokensToday), k.tokenCap)) : h('div', { class: 'hint num', style: { marginTop: '5px' } }, fmt(tok(k.tokensToday)) + ' tokens')),
               h('td', null, capBox),
               h('td', null, tokBox),
               h('td', null, sw(k.enabled, function (on) { act(api('PATCH', 'router-keys/' + k.id, { enabled: on }), on ? 'Key on' : 'Key off'); }, 'Key ' + k.label + ' on')),
@@ -1772,7 +1803,7 @@
         h('section', { class: 'card' },
           h('div', { class: 'card-head' }, h('div', null, h('h3', null, 'Create a key'), h('div', { class: 'sub' }, 'One key per agent, so you can see and limit each one.'))),
           h('div', { class: 'stack', style: { gap: '16px' } },
-            h('div', { class: 'form-grid' }, field('Agent name', label), field('Requests a day', capIn, 'Empty: no limit.'), field('Tokens a day', tokCapIn, 'Empty: no limit. 500k works too.')),
+            h('div', { class: 'form-grid three' }, field('Agent name', label), field('Requests a day', capIn), field('Tokens a day', tokCapIn, '500k and 2m work too.')),
             h('div', { class: 'paidbox' },
               sw(false, function (on) { allowPaid = on; paidNote.textContent = on ? 'On: free first, paid only when every free model is busy.' : 'Off: free models only.'; }, 'Allow paid models'),
               h('div', null, h('div', { style: { fontWeight: '700' } }, 'Allow paid models'), paidNote)),
@@ -1822,7 +1853,7 @@
   // ---------- settings ----------
   function viewSettings(main) {
     var body = page(true);
-    main.append(header('Settings', 'How the router picks models, keeps itself healthy and tells you when something needs you.'), body);
+    main.append(header('Settings', 'How models are picked, how KeyRouter looks after itself and when it tells you.'), body);
     var S = CFG.settings;
     var mode = S.mode;
     var fast = S.fastFirst !== false;
@@ -1845,7 +1876,7 @@
           try { routes = JSON.parse(ta.value); } catch (e) { errBox.textContent = 'JSON error: ' + e.message; return; }
           errBox.textContent = '';
           act(api('PUT', 'routes', { routes: routes }), 'Routes saved').then(function () { ta.value = JSON.stringify(CFG.routes, null, 2); }, function (e) { errBox.textContent = e.message; });
-        }, 'sm'),
+        }, 'orange sm'),
         btn('Undo changes', function () { ta.value = JSON.stringify(CFG.routes, null, 2); errBox.textContent = ''; }, 'soft sm'))));
     function head(title, sub, ic) {
       return h('div', { class: 'card-head' }, h('div', null, h('h3', null, title), h('div', { class: 'sub' }, sub)), ic ? h('span', { class: 'set-ic' }, icon(ic)) : null);
@@ -1867,7 +1898,7 @@
             field('Reuse identical answers (seconds)', cacheIn, 'The same request from the same agent key within this time gets the same answer, without calling a provider. 0 turns it off.')),
           h('div', null, btn('Save settings', function () {
             act(api('PUT', 'settings', { mode: mode, fastFirst: fast, paidDailyCap: capIn.num, maxAttempts: Number(att.value), timeoutMs: Number(to.value) * 1000, waitSecs: waitIn.value.trim() === '' ? undefined : Number(waitIn.value), cacheSecs: Number(cacheIn.value) || 0 }), 'Settings saved').then(render, function () {});
-          }, 'orange')))),
+          }, 'orange sm')))),
       h('div', { class: 'grid g2 mt' }, appearanceCard(head), upkeepCard(head, offIn, rotIn)),
       alertsCard(head),
       backupCard(head),
@@ -1928,7 +1959,7 @@
           field('Remind to replace keys after (days)', rotIn, 'Keys older than this get a note on their card and an alert. 0 turns it off.')),
         h('div', null, btn('Save upkeep', function () {
           act(api('PUT', 'settings', { autoOffDays: Number(offIn.value) || 0, rotateDays: Number(rotIn.value) || 0 }), 'Saved').then(render, function () {});
-        }, 'sm'))));
+        }, 'orange sm'))));
   }
 
   var ALERT_EVENTS = [['errors', 'Provider errors', 'A provider starts failing or runs out of credit'], ['paused', 'Paused or back on', 'A provider is paused automatically, or works again'], ['limits', 'Limit changes', 'A directory or website changed a provider’s limits'], ['budget', 'Agent budgets', 'An agent key reached its daily limit'], ['keys', 'Old keys', 'A key is older than your reminder']];
@@ -2010,7 +2041,7 @@
         a.remove();
         setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
       }, fail);
-    }, 'sm', 'download');
+    }, 'soft sm', 'download');
     return h('section', { class: 'card mt' },
       head('Backup', 'Move your setup to another deployment, or keep a copy', 'download'),
       h('div', { class: 'stack', style: { gap: '14px' } },

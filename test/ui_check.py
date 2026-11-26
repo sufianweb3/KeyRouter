@@ -101,7 +101,7 @@ with sync_playwright() as p:
     # unknown key: Connect waits for the base URL, pricing shows for a new provider
     pg.fill("input[name=provider-key]", "chutes-key-ffff6666")
     assert pg.is_disabled(form + " button:has-text('Connect')")
-    pg.wait_for_selector(form + " .acc.open .bill-row")
+    pg.wait_for_selector(form + " .acc.open .copts")
     pg.fill("input[name=custom-url]", "http://127.0.0.1:9901")
     assert not pg.is_disabled(form + " button:has-text('Connect')")
     w = pg.eval_on_selector("input[name=custom-url]", "e => e.getBoundingClientRect().width")
@@ -115,7 +115,7 @@ with sync_playwright() as p:
     # free token allowance: paid models count as free, meter shown
     cl = openp("creditapi")
     clt = cl.inner_text()
-    assert "credit" in clt and "Free tokens" in clt and "2 free" in clt and "count as free until this runs out" in clt and "Tokens today" in clt, clt
+    assert "free + credit" in clt and "Free tokens" in clt and "count as free until this runs out" in clt and "Tokens today" in clt, clt
     # providers that need no key
     kl = pg.inner_text(".keyless")
     assert "No key needed" in kl and "Kilo" in kl and "Ovh" in kl, kl
@@ -140,7 +140,7 @@ with sync_playwright() as p:
     at.fill("")
     at.type("500000")
     chu = pg.inner_text(".pcard:has(h3:has-text('zenmux'))")
-    assert "Free model answered" in chu and "big-pickle" in chu and "1 free" in chu and "2 paid" in chu, chu
+    assert "Free model answered" in chu and "big-pickle" in chu and "1\nfree" in chu and "2\npaid" in chu, chu
     pg.locator(".pcard", has=pg.locator("h3", has_text="zenmux")).locator("text=Check now").click()
     pg.wait_for_selector(".toast:has-text('free model')")
 
@@ -232,7 +232,9 @@ with sync_playwright() as p:
 
     # dark mode: toggle, persists across reload
     pg.click(".side >> text=Dark mode")
-    assert pg.get_attribute("html", "data-theme") == "dark"
+    # the switch cross-fades (view transition), then the theme is set
+    pg.wait_for_timeout(600)
+    assert pg.get_attribute("html", "data-theme") == "dark" and "vt-theme" not in (pg.get_attribute("html", "class") or "")
     pg.click(".side >> .nav-btn >> nth=0")
     pg.wait_for_selector("text=Tokens per day")
     pg.wait_for_timeout(400)
@@ -249,7 +251,8 @@ with sync_playwright() as p:
     pg.screenshot(path=OUT + "-12-dark-models.png", full_page=True)
     assert pg.evaluate("getComputedStyle(document.documentElement).colorScheme") == "dark"
     pg.click(".side >> text=Light mode")
-    assert pg.get_attribute("html", "data-theme") == "light"
+    pg.wait_for_timeout(600)
+    assert pg.get_attribute("html", "data-theme") == "light" and "vt-theme" not in (pg.get_attribute("html", "class") or "")
     # native parts (scrollbars, pickers) follow the chosen theme, not the system one
     assert pg.evaluate("getComputedStyle(document.documentElement).colorScheme") == "light"
 
@@ -257,14 +260,19 @@ with sync_playwright() as p:
     pg.click(".side >> .nav-btn[data-tip='Discover']")
     pg.wait_for_selector(".dcard")
     dt = pg.inner_text(".dgrid")
-    assert "NVIDIA NIM" in dt and "Phone verification" in dt and "No card" in dt and "Create account" in dt and "Not OpenAI-compatible" in dt, dt
+    assert "NVIDIA NIM" in dt and "Phone" in dt and "No card" in dt and "Sign up" in dt and "Not OpenAI-compatible" in dt, dt
+    # the full sign-up rule stays in the tooltip
+    assert "Phone verification" in pg.get_attribute(".dcard:has-text('NVIDIA NIM') .dfact:has-text('Sign-up')", "title")
     assert pg.locator(".dcard:has-text('OpenRouter') .pill.ready").count() == 1
     pg.wait_for_timeout(500)
     # aifree.dev entries: the catch, a flag, and a link back to the offer page (CC BY attribution)
-    assert "Catch:" in dt and "Flagged suspicious" in dt and "aifree.dev" in dt, dt
-    assert "aifree.dev" in pg.inner_text(".page .hint >> nth=0")
+    assert "Catch" in dt and "Flagged suspicious" in dt and "aifree.dev" in dt, dt
+    assert "aifree.dev" in pg.inner_text(".dsrc") and "providers" in pg.inner_text(".dsrc")
+    # Discover cards stay inside their card: the footer never overflows
+    over = pg.evaluate("[...document.querySelectorAll('.dcard')].filter(c => [...c.querySelectorAll('.dc-foot > *')].some(x => x.getBoundingClientRect().right > c.getBoundingClientRect().right + 1)).length")
+    assert over == 0, over
     assert pg.locator(".dcard a.dc-src").count() >= 2
-    assert pg.get_attribute(".dcard:has-text('AgentRouter') a.btn:has-text('Create account')", "href") == "https://agentrouter.org/register"
+    assert pg.get_attribute(".dcard:has-text('AgentRouter') a.dc-link", "href") == "https://agentrouter.org/register"
     pg.screenshot(path=OUT + "-16-discover.png", full_page=True)
     pg.locator(".dcard", has=pg.locator("h3", has_text="LLM7.io")).locator("button:has-text('Add')").click()
     pg.wait_for_selector(".card.connect")

@@ -687,6 +687,144 @@ input.hexin { width: 110px; text-transform: lowercase; }
 .hlegend span { display: inline-flex; align-items: center; gap: 6px; }
 .hlegend .hcell { width: 10px; height: 10px; border-radius: 3px; }
 table.health td { vertical-align: middle; }
+
+/* ---------- calm pass: fewer badges, aligned figures, Apple-like hierarchy ---------- */
+/* Status: a colored dot and a word, no filled badge. */
+.pill { height: auto; padding: 0; background: none !important; gap: 7px; font-size: 13.5px; font-weight: 600; color: var(--ink2); }
+.pill .dot { width: 8px; height: 8px; border-radius: 999px; background: var(--ink3); flex-shrink: 0; animation: none !important; box-shadow: none !important; }
+.pill.ready { color: var(--ink); }
+.pill.ready .dot { background: var(--good); }
+.pill.connected .dot, .pill.checking .dot { background: var(--ink3); }
+.pill.warn, .pill.limited { color: var(--warn-ink); }
+.pill.warn .dot, .pill.limited .dot { background: var(--warn); }
+.pill.error { color: var(--red-ink); }
+.pill.error .dot { background: var(--red); }
+
+/* Table headers in sentence case, like the rest of the type. */
+th { text-transform: none; letter-spacing: 0; font-size: 12.5px; font-weight: 600; }
+
+/* KPI tiles: every caption on one line, so the big numbers line up. */
+.g4 .kpi .foot, .kpi-row .kpi .foot { flex-wrap: nowrap; white-space: nowrap; overflow: hidden; min-height: 26px; }
+.bar::before { opacity: 0.55; }
+
+/* Overview: API keys */
+.krows { display: flex; flex-direction: column; }
+.krow { display: grid; grid-template-columns: 40px minmax(140px, 1.1fr) minmax(120px, 2fr) 120px 130px; align-items: center; gap: 18px; padding: 14px 0; border-top: 1px solid var(--line); }
+.krow-t { min-width: 0; }
+.krow-t .t { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.krow .s { font-size: 13px; color: var(--ink2); }
+.krow-m .track { height: 8px; }
+.krow-n { text-align: right; font-size: 13.5px; color: var(--ink3); white-space: nowrap; }
+.krow-n b { color: var(--ink); font-weight: 700; }
+@media (max-width: 860px) { .krow { grid-template-columns: 40px minmax(0, 1fr) auto; } .krow-m, .krow-n:last-child { display: none; } }
+
+/* Overview: provider health as a grouped list in columns */
+.hgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); column-gap: 32px; }
+.hrow { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 12px 6px; border: 0; border-top: 1px solid var(--line); background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; transition: background-color 160ms ease; }
+@media (hover: hover) { .hrow:hover { background: var(--fill); } }
+.hrow-t { flex: 1; min-width: 0; }
+.hrow .t { font-weight: 700; }
+.hrow .s { font-size: 13px; color: var(--ink2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hrow .pill { flex-shrink: 0; }
+
+/* Providers: quiet figures in fixed columns, so every row lines up */
+.pmini { gap: 4px; align-items: center; }
+.pfig { display: flex; flex-direction: column; align-items: flex-end; min-width: 66px; line-height: 1.15; }
+.pfig b { font-size: 15px; font-weight: 700; color: var(--ink); }
+.pfig small { font-size: 11.5px; color: var(--ink3); white-space: nowrap; }
+.pstat { width: 132px; flex-shrink: 0; display: flex; padding-left: 24px; }
+.chev { background: none; width: 30px; height: 30px; color: var(--ink3); }
+.ph h3 { font-size: 17px; }
+.ph .ttl { flex: 1; min-width: 0; }
+@container (max-width: 640px) { .pstat { width: auto; padding-left: 8px; } }
+
+/* Connect a provider */
+.connect .card-head { align-items: center; flex-wrap: wrap; margin-bottom: 18px; }
+.getkeys { font-size: 13px; color: var(--ink3); gap: 4px 14px; }
+.getkeys a { font-weight: 600; color: var(--ink2); text-transform: none; }
+@media (hover: hover) { .getkeys a:hover { color: var(--accent-ink); text-decoration: none; } }
+.cbody { display: flex; flex-direction: column; gap: 12px; }
+.cinfo.hide { display: none; }
+.copts { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 14px 20px; align-items: end; padding-top: 2px; }
+.copts .seg { padding: 6px; }
+.copts-hint { padding: 8px 4px 2px; }
+@media (max-width: 700px) { .copts { grid-template-columns: minmax(0, 1fr); } }
+.cfoot { border-top: 1px solid var(--line); padding-top: 14px; margin-top: 0; }
+
+/* Models */
+.price { font-size: 13.5px; font-weight: 600; white-space: nowrap; }
+.price.free { color: var(--good-ink); }
+.price.paid { color: var(--ink2); }
+.price.credit { color: var(--accent-ink); }
+.goodat { display: block; max-width: 260px; font-size: 13.5px; color: var(--ink2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mtable td { padding-top: 14px; padding-bottom: 14px; }
+.src { background: none !important; padding: 0; font-weight: 600; color: var(--ink3); }
+.src.arena { color: var(--ink2); }
+.src.mine { color: var(--accent-ink); }
+.pick-prov { font-size: 12.5px; font-weight: 600; color: var(--ink3); white-space: nowrap; }
+.pick-prov.paid { color: var(--warn-ink); }
+
+/* Agent keys table: inputs sized to their numbers */
+.ktable td { padding-left: 10px; padding-right: 10px; }
+.ktable input { width: 96px; height: 38px; padding: 0 12px; }
+.ktable td { white-space: nowrap; }
+.ktable td.name { min-width: 130px; }
+
+/* Discover: a pitch, three facts, then only what matters */
+.dsrc { font-size: 13px; color: var(--ink2); margin: -4px 4px 16px; }
+.dsrc a { color: var(--ink); font-weight: 600; text-decoration: none; }
+@media (hover: hover) { .dsrc a:hover { text-decoration: underline; } }
+.dgrid { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+.dcard { gap: 14px; padding: 22px; }
+.dc-t h3 { display: flex; align-items: center; gap: 8px; font-size: 17px; }
+.dc-url { font-size: 12.5px; color: var(--ink3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
+.dc-new { font-family: var(--font); font-size: 11px; font-weight: 700; color: var(--accent-ink); background: var(--accent-soft); padding: 1px 8px; border-radius: 999px; }
+.dc-tag { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.dfacts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 12px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.dfact { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 0 12px; border-left: 1px solid var(--line); }
+.dfact:first-child { padding-left: 0; border-left: 0; }
+.dfact span { font-size: 11.5px; font-weight: 600; color: var(--ink3); }
+.dfact b { font-size: 15px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dfact b.good { color: var(--good-ink); }
+.dline { display: flex; gap: 10px; font-size: 13px; min-width: 0; margin-top: -6px; }
+.dfacts + .dline { margin-top: 0; }
+.dline span { width: 72px; flex-shrink: 0; color: var(--ink3); }
+.dline b { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dc-warn { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; font-weight: 600; color: var(--warn-ink); }
+.dc-warn.bad { color: var(--red-ink); }
+.dc-warn svg { width: 15px; height: 15px; flex-shrink: 0; margin-top: 2px; }
+.dc-catch { background: none; padding: 0; border-radius: 0; font-size: 13px; color: var(--ink2); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; }
+.dc-catch.open { display: block; }
+.dc-catch b { color: var(--ink); }
+.dc-foot { gap: 12px; padding-top: 2px; }
+.dc-link { white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; font-size: 14px; font-weight: 700; color: var(--ink); text-decoration: none; }
+.dc-link svg, .dc-src svg { width: 13px; height: 13px; }
+.dc-src { font-size: 12.5px; color: var(--ink3); }
+@media (hover: hover) { .dc-link:hover { color: var(--accent-ink); } }
+
+/* Sidebar: the page list scrolls on short screens, so Lock is always reachable */
+.side-nav { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 6px; overflow-y: auto; overflow-x: hidden; scrollbar-width: none; }
+.side-nav::-webkit-scrollbar { display: none; }
+@media (max-height: 820px) {
+  .side { padding-top: 18px; padding-bottom: 14px; }
+  .nav-btn { height: 42px; min-height: 42px; }
+  .side-nav, .side-foot { gap: 2px; }
+  .side-foot { padding-top: 10px; }
+  .side-mode { padding: 9px 14px; margin-bottom: 4px; }
+  .brand { height: 50px; }
+  .shell.mini .brand { height: 96px; }
+}
+@media (max-height: 640px) { .side-mode { display: none; } }
+/* Phones: the page list is the floating tab bar */
+@media (max-width: 860px) {
+  .side { padding: 8px; }
+  .side-nav { flex-direction: row; justify-content: space-between; align-items: center; gap: 2px; overflow: visible; width: 100%; }
+  .nav-btn { height: 46px; min-height: 46px; }
+}
+
+/* Light and dark: a short cross-fade instead of a jump */
+::view-transition-old(root), ::view-transition-new(root) { animation-duration: 380ms; animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1); }
+html.theming, html.theming *, html.theming *::before, html.theming *::after { transition: background-color 380ms ease, color 380ms ease, border-color 380ms ease, fill 380ms ease, stroke 380ms ease, box-shadow 380ms ease !important; }
 </style>
 </head>
 <body>
