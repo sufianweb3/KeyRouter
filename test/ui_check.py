@@ -260,6 +260,11 @@ with sync_playwright() as p:
     assert "NVIDIA NIM" in dt and "Phone verification" in dt and "No card" in dt and "Create account" in dt and "Not OpenAI-compatible" in dt, dt
     assert pg.locator(".dcard:has-text('OpenRouter') .pill.ready").count() == 1
     pg.wait_for_timeout(500)
+    # aifree.dev entries: the catch, a flag, and a link back to the offer page (CC BY attribution)
+    assert "Catch:" in dt and "Flagged suspicious" in dt and "aifree.dev" in dt, dt
+    assert "aifree.dev" in pg.inner_text(".page .hint >> nth=0")
+    assert pg.locator(".dcard a.dc-src").count() >= 2
+    assert pg.get_attribute(".dcard:has-text('AgentRouter') a.btn:has-text('Create account')", "href") == "https://agentrouter.org/register"
     pg.screenshot(path=OUT + "-16-discover.png", full_page=True)
     pg.locator(".dcard", has=pg.locator("h3", has_text="LLM7.io")).locator("button:has-text('Add')").click()
     pg.wait_for_selector(".card.connect")
@@ -290,6 +295,9 @@ with sync_playwright() as p:
     r = pg.eval_on_selector_all(".side .nav-btn", "els => els.map(e => [e.getBoundingClientRect().width, e.getBoundingClientRect().height])")
     assert all(abs(w - h) < 1 and w == 48 for w, h in r), r
     assert not pg.is_visible(".side-mode"), "routing dot hidden in the rail"
+    # the expand button sits inside the rail and is the element you actually click
+    fb = pg.eval_on_selector(".side-fold", "e => { const r = e.getBoundingClientRect(); const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return [r.x, r.right, !!hit && (hit === e || e.contains(hit))]; }")
+    assert fb[1] <= 88 and fb[2], fb
     pg.screenshot(path=OUT + "-13-mini.png")
     pg.click(".side >> .nav-btn[data-tip='Models']")
     pg.wait_for_selector(".card.bench")
@@ -305,6 +313,34 @@ with sync_playwright() as p:
     pg.click(".side-fold")
     pg.wait_for_timeout(450)
     assert pg.eval_on_selector(".side", "e => e.getBoundingClientRect().width") > 200
+    # settings: accent presets, any hex, color wheel, reset; text on the accent stays readable
+    pg.click(".side >> .nav-btn[data-tip='Settings']")
+    pg.wait_for_selector(".swatches")
+    acc = lambda: pg.evaluate("getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()")
+    onacc = lambda: pg.evaluate("getComputedStyle(document.documentElement).getPropertyValue('--on-accent').trim()")
+    assert acc() == "#ff6a13", acc()
+    pg.click(".swatch[aria-label=Lime]")
+    pg.wait_for_selector("text=Color saved")
+    assert acc() == "#c6f135" and onacc() == "#1c1c1e", (acc(), onacc())
+    pg.screenshot(path=OUT + "-18-settings-lime.png", full_page=True)
+    pg.reload()
+    pg.wait_for_selector(".swatches")
+    assert acc() == "#c6f135", "accent kept after reload"
+    pg.fill("input.hexin", "#2563eb")
+    pg.press("input.hexin", "Enter")
+    pg.wait_for_timeout(300)
+    assert acc() == "#2563eb" and onacc() == "#ffffff", (acc(), onacc())
+    assert pg.locator("input[type=color].wheel").count() == 1
+    assert "Alerts" in pg.inner_text(".page") and "Backup" in pg.inner_text(".page") and "Upkeep" in pg.inner_text(".page")
+    pg.screenshot(path=OUT + "-19-settings-blue.png", full_page=True)
+    pg.click("button:has-text('Reset')")
+    pg.wait_for_timeout(300)
+    assert acc() == "#ff6a13", acc()
+    # usage: provider health strip
+    pg.click(".side >> .nav-btn[data-tip='Usage']")
+    pg.wait_for_selector("text=Per day")
+    pg.wait_for_timeout(600)
+    pg.screenshot(path=OUT + "-20-usage.png", full_page=True)
     # provider key boxes must not get the saved admin key autofilled
     pg.click(".side >> .nav-btn[data-tip='Providers']")
     pg.wait_for_selector("input[name=provider-key]")

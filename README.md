@@ -20,8 +20,17 @@ KeyRouter runs on your own Cloudflare or Vercel account (the free plans are enou
 | **Free credits** | Track sign-up credit (like 500K free tokens) so those paid models count as free until it is used up. |
 | **Keyless providers** | Some providers work with no key at all: one click to turn them on. |
 | **Real model scores** | Models are ranked by the public [LMArena](https://arena.ai/leaderboard) leaderboard (blind votes, with separate coding, math and hard-prompt boards) and, once an OpenRouter key is connected, [OpenRouter's benchmarks](https://openrouter.ai/benchmarks) (Artificial Analysis intelligence, coding and agentic indexes). OpenRouter scores are fitted onto the LMArena scale, then the two are averaged. Refreshed every 3 days. Models neither lists get an estimate, marked "Est.", and rank a little lower. |
-| **Discover providers** | A Discover page lists free LLM APIs from the [freellm.net](https://freellm.net) directory (updated daily): free model count, rate limits, whether a card is needed, context size and a link to create an account. **Add** fills in the provider for you. |
+| **Discover providers** | A Discover page lists free LLM APIs from two directories, [freellm.net](https://freellm.net) and [aifree.dev](https://aifree.dev), checked daily: free model count, rate limits, credits, whether a card is needed, context size, the catch and a link to create an account. Offers aifree.dev flags as risky are marked. **Add** fills in the provider for you. |
 | **Automatic setup** | When you add a provider, KeyRouter fills in its rate limits, free models and card policy from the directory. Give it the provider's website or docs and a free model also reads those pages. Both are checked again over time (directory daily, docs weekly) and every change is logged on the provider. Anything you set by hand is never overwritten; turn **Keep updated** off to freeze a provider. |
+| **Faster first** | Each model's answer time is tracked. With **Prefer faster models** on, slow models drop a little in the ranking. |
+| **Provider health** | The Usage page shows 14 days per provider: share of calls that worked, answer time and call count. |
+| **Auto-pause** | A provider that fails every call for 3 days (Settings) is paused and checked again once a day. It turns back on by itself when it works again, or with **Turn back on**. |
+| **Alerts** | Telegram or a webhook tells you when a provider keeps failing, gets paused, runs out of credits, an agent key hits its limit or a key is old. Messages never contain key values. |
+| **Agent budgets** | Each agent key can have a daily request limit and a daily token limit. |
+| **Response cache** | Optional: identical calls from the same agent key within a set number of seconds get the saved answer (`x-router-cache: hit`). Off by default. |
+| **Key reminders** | Provider and agent keys older than 90 days (Settings) are marked and listed under **Needs a look** on the Overview. |
+| **Backup** | Settings > Backup downloads your providers, routes, agent keys and settings as a file. Provider keys are left out on purpose. Restore merges a file back in and never deletes anything. |
+| **Your colors** | Settings > Appearance: pick an accent from presets (Orange, Lime, Blue, Violet, Pink, Teal, Gold), a color wheel or a hex code. Text on the accent stays readable automatically. |
 | **Provider logos** | Every provider shows its own logo, also ones you add later. Known brands use the LobeHub icon set; others use the icon from their own website. |
 
 Built-in presets include OpenRouter, Gemini, Groq, Cerebras, NVIDIA, Mistral, GitHub Models, SambaNova, Together, DeepSeek, Cohere, Hugging Face, Ollama Cloud, Chutes, Requesty, AIML API, CrowLLM, Numes, TokenHarbor, Inferbase, Respan, Infron and more (44 in all). Any other OpenAI-compatible provider works by name and base URL. Paste the address with or without `/models` or `/chat/completions` on the end: KeyRouter keeps the part calls are built on.
@@ -153,7 +162,11 @@ Your providers, keys and settings are kept across updates.
 | A provider shows "Blocked by the provider's firewall" | The provider refuses requests from servers. Nothing KeyRouter can change; use another provider. |
 | Scores show "Est." everywhere | The LMArena data has not loaded yet. Models page > **Update scores**. |
 | No OpenRouter scores | Connect an OpenRouter key (any free key works), then Models page > **Update scores**. |
-| Discover is empty | The directory could not be reached. Discover page > **Refresh**, or try again later. |
+| Discover is empty | The directories could not be reached. Discover page > **Refresh list**, or try again later. The source line shows which one failed. |
+| A provider shows **Paused automatically** | It failed every call for days. Fix the key or base URL, then press **Turn back on**. Change or turn off the wait under Settings > Upkeep. |
+| No Telegram alerts | Settings > Alerts: message your bot once first, then use **Send test**. The chat ID is a number (from @userinfobot) or `@channelname`. |
+| An agent gets "Daily token budget" | Its key reached **Tokens a day**. Raise it under Agent keys or wait for the next day (UTC). |
+| An agent gets an old answer | The response cache is on. Settings > Routing > **Reuse identical answers**: set 0 to turn it off. |
 | A model you expected to be free shows as paid | The provider lists a price for it. If you have free credit there, set **Free tokens** under that provider's Settings. |
 
 ## How routing handles errors
@@ -187,7 +200,8 @@ python3 test/ui_check.py      # headless browser walkthrough (needs Playwright)
 | `src/index.js` | Cloudflare entry: stores data in a Durable Object |
 | `api/index.js`, `src/redis-storage.js` | Vercel entry: stores data in Upstash Redis |
 | `src/bench.js` | Reads the LMArena leaderboard and OpenRouter benchmarks and matches model names |
-| `src/learn.js` | Reads the provider directory and provider websites or docs for limits and free models |
+| `src/learn.js` | Reads the provider directories and provider websites or docs for limits and free models |
+| `src/extras.js` | Alerts, backup and restore, and the response cache |
 | `src/logos.js` | Finds a logo for each provider |
 | `src/ui/` | The dashboard |
 
@@ -198,11 +212,12 @@ Optional settings (Cloudflare vars or Vercel environment variables), mostly for 
 | Name | Does |
 |---|---|
 | `BENCH_OFF`, `DIR_OFF`, `LEARN_OFF` | Turn off benchmark loading, the provider directory or docs reading |
-| `BENCH_URL`, `BENCH_OR_URL`, `DIR_URL` | Point the LMArena data, OpenRouter benchmarks or directory at another address |
+| `AIFREE_OFF` | Turn off the aifree.dev directory |
+| `BENCH_URL`, `BENCH_OR_URL`, `DIR_URL`, `AIFREE_URL` | Point the LMArena data, OpenRouter benchmarks or a directory at another address |
 | `LEARN_LOCAL` | Tests only: lets docs reading reach local addresses |
 
 ## License
 
 [MIT](LICENSE)
 
-Model scores come from the [LMArena leaderboard](https://arena.ai/leaderboard) ([dataset](https://huggingface.co/datasets/lmarena-ai/leaderboard-dataset)) and [OpenRouter's benchmarks](https://openrouter.ai/benchmarks) (data by Artificial Analysis). The provider directory comes from [freellm.net](https://freellm.net) ([awesome-freellm-apis](https://github.com/open-free-llm-api/awesome-freellm-apis)). Provider logos come from [LobeHub Icons](https://github.com/lobehub/lobe-icons) (MIT) or the provider's own website, and belong to their owners.
+Model scores come from the [LMArena leaderboard](https://arena.ai/leaderboard) ([dataset](https://huggingface.co/datasets/lmarena-ai/leaderboard-dataset)) and [OpenRouter's benchmarks](https://openrouter.ai/benchmarks) (data by Artificial Analysis). Provider directories come from [freellm.net](https://freellm.net) ([awesome-freellm-apis](https://github.com/open-free-llm-api/awesome-freellm-apis)) and [aifree.dev](https://aifree.dev) ([CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); each listing links back to its aifree.dev page). Provider logos come from [LobeHub Icons](https://github.com/lobehub/lobe-icons) (MIT) or the provider's own website, and belong to their owners.

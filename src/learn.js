@@ -10,6 +10,13 @@ export const DIRECTORY = {
   status: 'https://raw.githubusercontent.com/open-free-llm-api/awesome-freellm-apis/main/status.json',
   readme: 'https://raw.githubusercontent.com/open-free-llm-api/awesome-freellm-apis/main/README.md',
 };
+// Second directory: aifree.dev, a hand-verified catalog of free AI offers with a public JSON API (CC BY 4.0).
+export const AIFREE = {
+  name: 'aifree.dev',
+  url: 'https://aifree.dev',
+  api: 'https://aifree.dev/api/v1/offers',
+  license: 'CC BY 4.0',
+};
 export const DIR_EVERY = 24 * 3600000;
 export const LEARN_EVERY = 7 * 24 * 3600000;
 
@@ -170,23 +177,174 @@ export function parseDirectory(statusJson, readme) {
   return out.sort((a, b) => (b.freeModels || 0) - (a.freeModels || 0));
 }
 
-export async function fetchDirectory(fetcher, urls) {
+const FREE_TYPES = { 'free-tier': 'free', 'fully-free': 'free', 'free-credits': 'credits', 'free-trial': 'trial' };
+// Sign-up links without referral or tracking parameters.
+export function cleanLink(u) {
+  const h = httpsUrl(u);
+  if (!h) return '';
+  try {
+    const x = new URL(h);
+    for (const k of Array.from(x.searchParams.keys())) if (/^(aff|affiliate|ref|referral|referrer|via|invite|inviter|utm_.*|fbclid|gclid)$/i.test(k)) x.searchParams.delete(k);
+    return x.href.replace(/\?$/, '').replace(/\/+$/, '');
+  } catch {
+    return h;
+  }
+}
+// "Replicate Try for Free" -> "Replicate", "Agnes AI Free API" -> "Agnes AI".
+const niceName = (n) => {
+  let x = String(n || '').replace(/\s+(free|api)\b.*$/i, '').trim();
+  while (/\s(try|for|to|get|with|the|a|an|and|of)$/i.test(x)) x = x.replace(/\s\S+$/, '');
+  return short(x, 60);
+};
+const compact = (v) => {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return String(v);
+  return n >= 1e6 ? +(n / 1e6).toFixed(1) + 'M' : n >= 1e4 ? +(n / 1e3).toFixed(1) + 'K' : String(n);
+};
+const NOT_CHAT = /^(image|video|audio|tts|stt|speech|music|voice|embedding|transcription)$/;
+const short = (s, n) => String(s || '').replace(/\s+/g, ' ').trim().slice(0, n);
+
+// aifree.dev offers in the same shape as the freellm.net entries. Programs that need you to qualify
+// (student, startup, nonprofit) are left out: they are not a key you can create and add today.
+export function parseAifree(offers) {
+  const byId = {};
+  for (const o of Array.isArray(offers) ? offers : []) {
+    if (!o || !o.slug || !FREE_TYPES[o.freeType] || o.status === 'expired') continue;
+    // Image, audio and video offers are not chat APIs unless they say they are.
+    if (/^(image|audio|video)$/.test(o.category || '') && !o.apiCompat) continue;
+    const baseUrl = httpsUrl(o.apiBaseUrl);
+    const prov = String(o.provider || '').trim();
+    const isDomain = /^[a-z0-9.-]+\.[a-z]{2,}(\/.*)?$/i.test(prov) || /^https?:/.test(prov);
+    const site = isDomain ? httpsUrl(/^https?:/.test(prov) ? prov : 'https://' + prov.replace(/\/.*$/, '')) : httpsUrl(o.vendorUrl);
+    const root = rootOf(baseUrl) || rootOf(site) || rootOf(o.vendorUrl);
+    const id = (root ? root.split('.')[0] : normName(o.name)).replace(/[^a-z0-9-]/g, '').slice(0, 32);
+    if (!id) continue;
+    const tier = FREE_TYPES[o.freeType];
+    const models = (Array.isArray(o.models) ? o.models : [])
+      .filter((m) => m && (m.apiId || m.name) && !NOT_CHAT.test(m.family || ''))
+      .map((m) => {
+        const rl = m.rateLimit || {};
+        const lim = [rl.rpm ? rl.rpm + ' RPM' : '', rl.rpd ? rl.rpd + ' RPD' : '', rl.tpm ? rl.tpm + ' TPM' : ''].filter(Boolean).join(', ');
+        return { id: short(m.apiId || m.name, 120), name: short(m.name, 80), ctx: m.contextK ? m.contextK + 'K' : '', limit: lim, rpm: rl.rpm || null, rpd: rl.rpd || null };
+      });
+    // One provider-wide limit only when every model with a limit says the same.
+    const same = (k) => {
+      const v = Array.from(new Set(models.map((m) => m[k]).filter((x) => x)));
+      return v.length === 1 ? v[0] : null;
+    };
+    const limits = {};
+    if (same('rpm')) limits.rpm = same('rpm');
+    if (same('rpd')) limits.rpd = same('rpd');
+    const amt = o.amount && o.amount.value ? (o.amount.unit === 'USD' ? '$' + compact(o.amount.value) : compact(o.amount.value) + ' ' + short(o.amount.unit, 20)) + (o.refill && o.refill !== 'unknown' ? ' ' + (o.refill === 'once' ? 'once' : o.refill) : '') : '';
+    const e = {
+      id,
+      name: (!isDomain && prov ? short(prov, 60) : niceName(o.name)) || id,
+      status: o.status === 'verified' ? 'verified' : 'listed',
+      freeModels: tier === 'free' ? models.length : 0,
+      maxContext: Math.max(0, ...models.map((m) => (parseFloat(m.ctx) || 0) * 1000)),
+      tagline: short(o.headline, 200),
+      catch: short(o.theCatch, 260),
+      baseUrl,
+      keyUrl: cleanLink(o.vendorUrl),
+      website: site ? new URL(site).origin : root ? 'https://' + root : '',
+      openai: o.apiCompat ? o.apiCompat === 'openai' : null,
+      card: o.cardRequired === false ? 'No' : o.cardRequired === true ? 'Yes' : '',
+      tier,
+      credits: amt,
+      models: models.slice(0, 6).map((m) => ({ id: m.id, name: m.name, ctx: m.ctx, limit: m.limit })),
+      limitText: Array.isArray(o.limits) ? short(o.limits.slice(0, 2).join('; '), 160) : '',
+      limits: Object.keys(limits).length ? limits : null,
+      offerUrl: /^https:\/\/aifree\.dev\//.test(o.url || '') ? o.url : 'https://aifree.dev/offer/' + encodeURIComponent(o.slug),
+      verifiedAt: short(o.verifiedAt, 10),
+      risk: o.riskStatus && o.riskStatus !== 'clean' ? short(o.riskStatus, 20) : null,
+      sources: ['aifree'],
+    };
+    const cur = byId[id];
+    // Several offers from one provider: keep the one you can call (an API address), then the free one.
+    const better = (a, b) => (!!a.baseUrl - !!b.baseUrl) || ((a.tier === 'free') - (b.tier === 'free')) || a.freeModels - b.freeModels;
+    if (!cur || better(e, cur) > 0) byId[id] = e;
+  }
+  return Object.values(byId);
+}
+
+// One list from both directories: the same provider (same domain or name) becomes one entry.
+export function mergeDirectories(a, b) {
+  const out = a.map((e) => Object.assign({ sources: ['freellm'] }, e));
+  for (const x of b) {
+    const root = rootOf(x.baseUrl) || rootOf(x.website);
+    const n = normName(x.name);
+    const m = out.find((e) => (root && (rootOf(e.baseUrl) === root || rootOf(e.website) === root || rootOf(e.keyUrl) === root)) || (n && (normName(e.name) === n || normName(e.id) === n || e.id === x.id)));
+    if (!m) {
+      // Only offers you can call: an API address or a chat model (not speech, translation or scraping).
+      if (x.baseUrl || x.models.length) out.push(x);
+      continue;
+    }
+    if (!m.sources.includes('aifree')) m.sources = m.sources.concat('aifree');
+    for (const f of ['card', 'baseUrl', 'keyUrl', 'website', 'credits', 'limitText']) if (!m[f] && x[f]) m[f] = x[f];
+    for (const f of ['catch', 'offerUrl', 'verifiedAt', 'risk']) if (x[f]) m[f] = x[f];
+    if (!m.limits && x.limits) m.limits = x.limits;
+    if ((!m.models || !m.models.length) && x.models.length) m.models = x.models;
+    if (!m.freeModels && x.freeModels) m.freeModels = x.freeModels;
+    if (m.openai == null) m.openai = x.openai;
+  }
+  return out.sort((p, q) => (q.freeModels || 0) - (p.freeModels || 0));
+}
+
+// Pages of 50: the API fails on bigger pages.
+export async function fetchAifree(get, api) {
+  const all = [];
+  for (let page = 1; page <= 6; page++) {
+    const r = await get((api || AIFREE.api) + '?category=api-credits&limit=50&page=' + page, { headers: Object.assign({ accept: 'application/json' }, UA), signal: AbortSignal.timeout(15000) });
+    if (!r.ok) {
+      if (page === 1) throw new Error('aifree.dev answered ' + r.status);
+      break; // keep the pages we have
+    }
+    const j = await r.json();
+    const rows = Array.isArray(j.data) ? j.data : [];
+    all.push(...rows);
+    if (!j.meta || page >= (j.meta.pages || 1) || !rows.length) break;
+  }
+  return parseAifree(all);
+}
+
+// Both directories; either one failing still gives a list.
+export async function fetchDirectory(fetcher, urls, opts) {
   const get = fetcher || fetch;
   const u = Object.assign({}, DIRECTORY, urls || {});
+  const o = opts || {};
   const opt = { headers: Object.assign({ accept: 'application/json, text/plain' }, UA), signal: AbortSignal.timeout(20000) };
-  const sr = await get(u.status, opt);
-  if (!sr.ok) throw new Error('Directory answered ' + sr.status);
-  const status = await sr.json();
-  let readme = '';
+  const sources = {};
+  let list = [];
+  let updated = '';
   try {
-    const rr = await get(u.readme, opt);
-    if (rr.ok) readme = (await rr.text()).slice(0, 600000);
-  } catch {
-    // the JSON alone is enough
+    const sr = await get(u.status, opt);
+    if (!sr.ok) throw new Error('freellm.net answered ' + sr.status);
+    const status = await sr.json();
+    let readme = '';
+    try {
+      const rr = await get(u.readme, opt);
+      if (rr.ok) readme = (await rr.text()).slice(0, 600000);
+    } catch {
+      // the JSON alone is enough
+    }
+    list = parseDirectory(status, readme);
+    updated = String(status.catalog_updated_at || status.generated_at || '').slice(0, 10);
+    sources.freellm = { ok: true, n: list.length };
+  } catch (e) {
+    sources.freellm = { ok: false, error: String(e.message || e).slice(0, 120) };
   }
-  const list = parseDirectory(status, readme);
-  if (list.length < 3) throw new Error('Directory looked empty');
-  return { at: Date.now(), updated: String(status.catalog_updated_at || status.generated_at || '').slice(0, 10), list };
+  let extra = [];
+  if (!o.aifreeOff) {
+    try {
+      extra = await fetchAifree(get, o.aifreeApi);
+      sources.aifree = { ok: true, n: extra.length };
+    } catch (e) {
+      sources.aifree = { ok: false, error: String(e.message || e).slice(0, 120) };
+    }
+  }
+  const merged = mergeDirectories(list, extra);
+  if (merged.length < 3) throw new Error('Directory looked empty' + (sources.freellm.error ? ': ' + sources.freellm.error : ''));
+  return { at: Date.now(), updated: updated || new Date().toISOString().slice(0, 10), list: merged, sources };
 }
 
 // Which directory entry is this provider? Same address first, then the same name.

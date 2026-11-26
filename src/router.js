@@ -3,8 +3,9 @@
 import { PRESETS, DEFAULT_ROUTES, DEFAULT_SETTINGS } from './config.js';
 import { CATEGORIES, SMART_NAMES, MODES, analyze, taskScore, detectTask, isChatId } from './models.js';
 import { BENCH_SOURCE, BENCH_EVERY, fetchBench, makeLookup, benchScore, toScore, OR_SOURCE, fetchOpenRouterBench, aaScore, aaTaskScore, fitAA } from './bench.js';
-import { DIRECTORY, DIR_EVERY, LEARN_EVERY, fetchDirectory, findEntry, pagesFor, readPages, LEARN_PROMPT, cleanLearned, looseId, rootOf, allowLocal } from './learn.js';
+import { DIRECTORY, AIFREE, DIR_EVERY, LEARN_EVERY, fetchDirectory, findEntry, pagesFor, readPages, LEARN_PROMPT, cleanLearned, looseId, rootOf, allowLocal } from './learn.js';
 import { resolveLogo } from './logos.js';
+import { cleanAlerts, alertsView, deliver, makeBackup, applyBackup, ReplyCache } from './extras.js';
 
 export const json = (status, obj, extra) =>
   new Response(JSON.stringify(obj), { status, headers: Object.assign({ 'content-type': 'application/json' }, extra || {}) });
@@ -285,6 +286,7 @@ export class KeyRouter {
     this.rrProvider = {};
     this.rrRoute = {};
     this.affinity = new Map();
+    this.cache = new ReplyCache(300);
     ctx.blockConcurrencyWhile(async () => {
       const s = await ctx.storage.get(['providers', 'routes', 'settings', 'routerKeys', 'overrides', 'state', 'usage', 'checks', 'acct']);
       const routes = s.get('routes') || clone(DEFAULT_ROUTES);
@@ -351,6 +353,8 @@ export class KeyRouter {
       this.usage = s.get('usage') || { days: {} };
       this.checks = s.get('checks') || {};
       this.acct = s.get('acct') || {};
+      this.alerts = (await ctx.storage.get('alerts')) || null;
+      this.alertSent = (await ctx.storage.get('alertSent')) || {};
       this.catalog = {};
       const cats = await ctx.storage.list({ prefix: 'cat:' });
       for (const [k, v] of cats) this.catalog[k.slice(4)] = v;
@@ -443,6 +447,126 @@ export class KeyRouter {
     this.ctx.storage.put({ state: this.state, usage: this.usage }).catch((e) => console.error(JSON.stringify({ message: 'state save failed', error: String(e) })));
   }
 
+  // Telegram or webhook message, at most once per key per period. Key values never go in the text.
+  notify(event, key, text, every) {
+    const a = this.alerts;
+    if (!a || !(a.telegram || a.webhook) || (a.events && a.events[event] === false)) return null;
+    const now = Date.now();
+    if (now - (this.alertSent[key] || 0) < (every || 12 * HOUR)) return null;
+    this.alertSent[key] = now;
+    for (const [k, t] of Object.entries(this.alertSent)) if (now - t > 40 * 86400000) delete this.alertSent[k];
+    this.ctx.storage.put('alertSent', this.alertSent).catch(() => {});
+    const p = deliver(a, event, text).then(
+      (r) => log({ message: 'alert sent', event, result: r }),
+      (e) => log({ message: 'alert failed', event, error: String(e.message || e) }),
+    );
+    if (this.ctx.waitUntil) this.ctx.waitUntil(p);
+    return p;
+  }
+
+  // Today's counters for one provider (requests, failures, speed).
+  provDay(provider) {
+    const day = this.today('UTC');
+    const d = this.usage.days[day] || (this.usage.days[day] = { p: 0, c: 0, req: 0, est: 0, prov: {}, keys: {}, models: {} });
+    return d.prov[provider] || (d.prov[provider] = { p: 0, c: 0, req: 0 });
+  }
+
+  // How long a model took to answer (first data for a stream), smoothed.
+  noteSpeed(c, ms) {
+    c.mb.lat = c.mb.lat ? Math.round(c.mb.lat * 0.7 + ms * 0.3) : ms;
+    const pd = this.provDay(c.t.provider);
+    pd.ms = (pd.ms || 0) + ms;
+    pd.msN = (pd.msN || 0) + 1;
+  }
+
+  // Watch connected providers: alert when one starts failing, pause it after a few days, try paused ones daily.
+  async watchProviders() {
+    const S = this.cfg.settings;
+    const now = Date.now();
+    let changed = false;
+    const days = S.autoOffDays == null ? 3 : S.autoOffDays;
+    for (const [n, p] of Object.entries(this.cfg.providers)) {
+      if (!p.keys.length) continue;
+      if (p.autoOff) {
+        if (now - (p.autoOff.checked || p.autoOff.at) < 24 * HOUR) continue;
+        p.autoOff.checked = now;
+        changed = true;
+        let ok = false;
+        for (const k of p.keys) if ((await this.checkKey(n, k)).ok) ok = true;
+        await this.ctx.storage.put('checks', this.checks);
+        if (ok) {
+          p.enabled = true;
+          delete p.autoOff;
+          delete p.deadSince;
+          log({ message: 'provider back on', provider: n });
+          this.notify('paused', 'back:' + n, n + ' works again and is turned back on.', HOUR);
+        }
+        continue;
+      }
+      if (p.enabled === false) continue;
+      const ks = p.keys.map((k) => this.checks[n] && this.checks[n].keys && this.checks[n].keys[k.id]).filter(Boolean);
+      const dead = ks.length === p.keys.length && ks.every((x) => !x.ok && !x.limited);
+      if (dead) {
+        const why = String(ks[0].error || 'every key fails').slice(0, 120);
+        if (!p.deadSince) {
+          p.deadSince = now;
+          changed = true;
+          this.notify('errors', 'err:' + n, n + ' is failing: ' + why + '. Calls go to other providers meanwhile.', 24 * HOUR);
+        }
+        if (days > 0 && now - p.deadSince > days * 86400000) {
+          p.enabled = false;
+          p.autoOff = { at: now, reason: why, checked: now };
+          changed = true;
+          log({ message: 'provider paused automatically', provider: n, reason: why });
+          this.notify('paused', 'off:' + n, 'Paused ' + n + ' after ' + days + ' days of failures (' + why + '). It is checked daily and turns back on when it works.', HOUR);
+        }
+      } else if (p.deadSince) {
+        delete p.deadSince;
+        changed = true;
+      }
+    }
+    const rd = S.rotateDays == null ? 90 : S.rotateDays;
+    if (rd > 0) {
+      const age = (t) => Math.floor((now - t) / 86400000);
+      for (const [n, p] of Object.entries(this.cfg.providers))
+        for (const k of p.keys) if (k.added && now - k.added > rd * 86400000) this.notify('keys', 'old:' + n + ':' + k.id, 'The ' + n + ' key ' + k.mask + ' is ' + age(k.added) + ' days old. Consider replacing it.', 30 * 86400000);
+      for (const rk of this.cfg.routerKeys)
+        if (rk.enabled !== false && rk.created && now - rk.created > rd * 86400000) this.notify('keys', 'oldrk:' + rk.id, 'Agent key "' + rk.label + '" is ' + age(rk.created) + ' days old. Consider replacing it.', 30 * 86400000);
+    }
+    if (changed) await this.saveCfg();
+  }
+
+  // Settings from the dashboard or a backup; anything out of range is ignored.
+  applySettings(body) {
+    const S = this.cfg.settings;
+    const num = (k, lo, hi) => {
+      if (body[k] == null || body[k] === '') return;
+      const v = Number(body[k]);
+      if (Number.isFinite(v) && v >= lo && v <= hi) S[k] = Math.floor(v);
+    };
+    const ma = Number(body.maxAttempts);
+    const to = Number(body.timeoutMs);
+    if (Number.isFinite(ma) && ma >= 1 && ma <= 50) S.maxAttempts = Math.floor(ma);
+    if (Number.isFinite(to) && to >= 5000 && to <= 300000) S.timeoutMs = Math.floor(to);
+    num('waitSecs', 0, 60);
+    num('cacheSecs', 0, 3600);
+    num('autoOffDays', 0, 60);
+    num('rotateDays', 0, 730);
+    if ('fastFirst' in body) S.fastFirst = body.fastFirst !== false;
+    if ('accent' in body) {
+      if (!/^#[0-9a-fA-F]{6}$/.test(String(body.accent || ''))) throw new Error('Color must be a hex code like #ff6a13');
+      S.accent = String(body.accent).toLowerCase();
+    }
+    if ('mode' in body) {
+      if (!MODES.includes(body.mode)) throw new Error('Mode must be free, mixed or best');
+      S.mode = body.mode;
+    }
+    if ('paidDailyCap' in body) {
+      const cap = Number(body.paidDailyCap);
+      S.paidDailyCap = Number.isFinite(cap) && cap > 0 ? Math.floor(cap) : 0;
+    }
+  }
+
   // ---------- model catalog ----------
   async alarm() {
     const now = Date.now();
@@ -483,6 +607,7 @@ export class KeyRouter {
     // Read one provider's website or docs per run, one a minute, so it never crowds out real requests.
     const learn = this.learnDue();
     if (learn) await this.learnProvider(learn);
+    await this.watchProviders();
     const next = Math.min(this.cfg.alarmFull, now + CATALOG_EVERY, this.nextRetest(), this.learnDue() ? Date.now() + 60000 : Infinity);
     await this.ctx.storage.setAlarm(Math.max(next, Date.now() + 1000));
   }
@@ -612,13 +737,18 @@ export class KeyRouter {
   async refreshDirectory() {
     this.dirTried = Date.now();
     try {
-      const d = await fetchDirectory(null, this.env.DIR_URL ? { status: this.env.DIR_URL + '/status.json', readme: this.env.DIR_URL + '/README.md' } : null);
-      // First time seen, so new providers can be marked as new.
-      for (const e of d.list) if (!this.dirSeen[e.id]) this.dirSeen[e.id] = this.dir ? Date.now() : 1;
+      const d = await fetchDirectory(null, this.env.DIR_URL ? { status: this.env.DIR_URL + '/status.json', readme: this.env.DIR_URL + '/README.md' } : null, { aifreeApi: this.env.AIFREE_URL, aifreeOff: !!this.env.AIFREE_OFF });
+      // First time seen, so new providers can be marked as new. A source seen for the first time marks nothing new.
+      const hadAifree = !!(this.dir && this.dir.sources && this.dir.sources.aifree && this.dir.sources.aifree.ok);
+      for (const e of d.list) {
+        if (this.dirSeen[e.id]) continue;
+        const fresh = this.dir && (hadAifree || (e.sources || []).includes('freellm'));
+        this.dirSeen[e.id] = fresh ? Date.now() : 1;
+      }
       this.dir = d;
       this.dirErr = null;
       await this.ctx.storage.put({ dir: d, dirSeen: this.dirSeen });
-      log({ message: 'directory refreshed', providers: d.list.length, updated: d.updated });
+      log({ message: 'directory refreshed', providers: d.list.length, updated: d.updated, sources: d.sources });
       // Keep connected providers in step with what the directory now says.
       for (const n of Object.keys(this.cfg.providers)) if (this.cfg.providers[n].keys.length) this.applyDirectory(n);
       await this.saveCfg();
@@ -637,7 +767,7 @@ export class KeyRouter {
   applyDirectory(name) {
     const e = this.dirEntry(name);
     if (!e) return false;
-    return this.applyLearned(name, { limits: e.limits || undefined, card: e.card || undefined, signupUrl: e.keyUrl || undefined, website: e.website || undefined, freeModels: e.models.map((m) => m.id), notes: e.tagline || undefined, listedFree: e.freeModels || 0 }, 'directory');
+    return this.applyLearned(name, { limits: e.limits || undefined, card: e.card || undefined, signupUrl: e.keyUrl || undefined, website: e.website || undefined, freeModels: e.freeModels ? e.models.map((m) => m.id) : [], notes: e.tagline || undefined, listedFree: e.freeModels || 0 }, 'directory');
   }
 
   // Save learned facts. Limits and allowances you set by hand are never replaced; turn off "keep updated" to freeze all.
@@ -685,6 +815,7 @@ export class KeyRouter {
       a.log.unshift({ at: Date.now(), source, text: changes.join(', ') });
       a.log = a.log.slice(0, 12);
       log({ message: 'provider settings updated', provider: name, source, changes });
+      this.notify('limits', 'lim:' + name + ':' + fnv(changes.join(',')), name + ' settings updated from its ' + (source === 'docs' ? 'website' : source) + ': ' + changes.join(', '), 7 * 86400000);
     }
     this.rebuild();
     return changes.length > 0;
@@ -779,7 +910,9 @@ export class KeyRouter {
           return Object.assign({}, e, { connected: conn ? conn[0] : null, preset: preset || null, isNew: seen > 1 && Date.now() - seen < 14 * 86400000, seen });
         })
       : [];
-    return { source: DIRECTORY, updated: d ? d.updated : null, at: d ? d.at : null, error: this.dirErr || null, providers: list };
+    const st = (d && d.sources) || {};
+    const sources = [Object.assign({ id: 'freellm' }, DIRECTORY, st.freellm || {}), Object.assign({ id: 'aifree' }, AIFREE, st.aifree || {})].map((x) => ({ id: x.id, name: x.name, url: x.url, license: x.license || null, ok: x.ok !== false, n: x.n || 0, error: x.error || null }));
+    return { source: DIRECTORY, sources, updated: d ? d.updated : null, at: d ? d.at : null, error: this.dirErr || null, providers: list };
   }
 
   keyRetry() {
@@ -916,9 +1049,13 @@ export class KeyRouter {
       if (!id.startsWith('m:')) continue;
       const parts = id.split(':');
       const key = parts[1] + '/' + parts.slice(3).join(':');
-      const x = h[key] || (h[key] = { ok: 0, fail: 0 });
+      const x = h[key] || (h[key] = { ok: 0, fail: 0, lat: 0, latN: 0 });
       x.ok += b.ok || 0;
       x.fail += b.fail || 0;
+      if (b.lat) {
+        x.lat = Math.round((x.lat * x.latN + b.lat) / (x.latN + 1));
+        x.latN++;
+      }
     }
     return h;
   }
@@ -1107,6 +1244,7 @@ export class KeyRouter {
     det = det || { tokens: 0, needTools: false };
     const out = [];
     const paidOk = this.paidAllowed();
+    const fast = this.cfg.settings.fastFirst !== false;
     for (const name of Object.keys(this.providers)) {
       const c = this.catalog[name];
       if (!c || this.overTpd(name)) continue;
@@ -1126,7 +1264,9 @@ export class KeyRouter {
         // A model close to its rate or daily limit slides down, so traffic moves to a near-equal model
         // before the provider starts refusing. Free quota lasts longer and fewer calls fail.
         const pr = this.pressure(name, m.id);
-        out.push({ provider: name, model: m.id, free: isFree, rank: Math.round((st.score - penalty - 15 * pr * pr) * 10) / 10, src: st.src });
+        // Faster first: a model that takes 3 s to start loses a point, 9 s or more loses five.
+        const slow = fast && hh && hh.lat ? Math.min(5, Math.max(0, (hh.lat - 1500) / 1500)) : 0;
+        out.push({ provider: name, model: m.id, free: isFree, rank: Math.round((st.score - penalty - 15 * pr * pr - slow) * 10) / 10, src: st.src });
       }
     }
     out.sort((a, b) => {
@@ -1358,6 +1498,10 @@ export class KeyRouter {
     if (cls.reason === 'daily quota' && b.dayCount > 1 && !cls.tokens) {
       b.learned = Object.assign(b.learned || {}, { rpd: Math.max(1, b.dayCount - 1), rpdAt: Date.now() });
     }
+    const pd = this.provDay(c.t.provider);
+    if (cls.reason === 'rate limited' || cls.reason === 'daily quota') pd.lim = (pd.lim || 0) + 1;
+    else pd.fail = (pd.fail || 0) + 1;
+    if (cls.reason === 'no credits') this.notify('errors', 'cred:' + c.t.provider + ':' + c.k.id, c.t.provider + ' key ' + c.k.mask + ' is out of credits.', 24 * HOUR);
     log({ message: 'failover', provider: c.t.provider, model: c.t.model, key: c.k.mask, reason: cls.reason, scope, learned: b.learned || null });
     this.save();
   }
@@ -1434,11 +1578,35 @@ export class KeyRouter {
     // Daily cap per agent key: a leaked key cannot drain all your quota.
     if (rk) {
       const rb = this.bucket('rk:' + rk.id, 'UTC');
-      if (rk.dailyCap && rb.dayCount >= rk.dailyCap)
+      const day = this.today('UTC');
+      if (rk.dailyCap && rb.dayCount >= rk.dailyCap) {
+        this.notify('budget', 'cap:' + rk.id + ':' + day, 'Agent key "' + rk.label + '" reached its daily limit of ' + rk.dailyCap + ' requests.', 20 * HOUR);
         return json(429, { error: { message: 'Daily cap (' + rk.dailyCap + ') reached for agent key "' + rk.label + '"', type: 'router_cap' } }, { 'retry-after': '3600' });
+      }
+      if (rk.tokenCap) {
+        const d = this.usage.days[day];
+        const u = d && d.keys && d.keys[rk.id];
+        if (u && u.p + u.c >= rk.tokenCap) {
+          this.notify('budget', 'tok:' + rk.id + ':' + day, 'Agent key "' + rk.label + '" used its daily budget of ' + rk.tokenCap.toLocaleString('en-US') + ' tokens.', 20 * HOUR);
+          return json(429, { error: { message: 'Daily token budget (' + rk.tokenCap + ') reached for agent key "' + rk.label + '"', type: 'router_cap' } }, { 'retry-after': '3600' });
+        }
+      }
       rb.dayCount++;
       rb.hits.push(Date.now());
       this.save();
+    }
+
+    // The same request again within a short while gets the same answer, at no cost.
+    const ttl = (this.cfg.settings.cacheSecs || 0) * 1000;
+    const ck = ttl > 0 ? (rk ? rk.id : 'dashboard') + '|' + endpoint + '|' + (await sha(JSON.stringify(body))) : null;
+    if (ck) {
+      const hit = this.cache.get(ck, ttl);
+      if (hit) {
+        const d = this.usage.days[this.today('UTC')];
+        if (d) d.cache = (d.cache || 0) + 1;
+        this.save();
+        return new Response(hit.body, { status: 200, headers: Object.assign({}, hit.headers, { 'x-router-cache': 'hit' }) });
+      }
     }
 
     const plan = endpoint === '/chat/completions' ? this.plan(body, rk) : { targets: this.resolveTargets(String(body.model || '')), task: null, mode: null, smart: false };
@@ -1479,6 +1647,7 @@ export class KeyRouter {
       const ctrl = new AbortController();
       if (signal) signal.addEventListener('abort', () => ctrl.abort());
       const timer = setTimeout(() => ctrl.abort(), this.cfg.settings.timeoutMs || 90000);
+      const t0 = Date.now();
       let r;
       try {
         r = await fetch(c.p.baseUrl + endpoint, {
@@ -1524,10 +1693,13 @@ export class KeyRouter {
         }
         c.mb.ok++;
         c.kb.ok++;
+        this.noteSpeed(c, Date.now() - t0);
         this.remember(plan.aff, c.t);
         this.markWorking(c);
         this.countReply(c, who, promptEst, text);
-        return new Response(text, { status: 200, headers: Object.assign({ 'content-type': r.headers.get('content-type') || 'application/json' }, hdr) });
+        const outH = Object.assign({ 'content-type': r.headers.get('content-type') || 'application/json' }, hdr);
+        if (ck) this.cache.set(ck, { body: text, headers: outH });
+        return new Response(text, { status: 200, headers: outH });
       }
 
       // Stream: peek until the first data event so an error-as-first-event can still fail over.
@@ -1560,6 +1732,7 @@ export class KeyRouter {
 
       c.mb.ok++;
       c.kb.ok++;
+      this.noteSpeed(c, Date.now() - t0);
       this.remember(plan.aff, c.t);
       this.markWorking(c);
       this.save();
@@ -1568,10 +1741,14 @@ export class KeyRouter {
       let tail = peek.slice(-6000);
       let chars = contentChars(peek);
       let counted = false;
-      const finish = () => {
+      // Keep a copy for the cache while it stays small.
+      let full = ck ? peek : null;
+      const sHdr = Object.assign({ 'content-type': 'text/event-stream', 'cache-control': 'no-cache' }, hdr);
+      const finish = (complete) => {
         if (counted) return;
         counted = true;
         self.countReply(c, who, promptEst, tail, chars);
+        if (complete && full != null && /\[DONE\]/.test(tail)) self.cache.set(ck, { body: full, headers: sHdr });
       };
       const stream = new ReadableStream({
         start(controller) {
@@ -1581,11 +1758,12 @@ export class KeyRouter {
           try {
             const { value, done } = await reader.read();
             if (done) {
-              finish();
+              finish(true);
               controller.close();
             } else {
               const str = dec.decode(value, { stream: true });
               tail = (tail + str).slice(-6000);
+              if (full != null) full = full.length + str.length > 512000 ? null : full + str;
               chars += contentChars(str);
               controller.enqueue(value);
             }
@@ -1599,7 +1777,7 @@ export class KeyRouter {
           reader.cancel().catch(() => {});
         },
       });
-      return new Response(stream, { status: 200, headers: Object.assign({ 'content-type': 'text/event-stream', 'cache-control': 'no-cache' }, hdr) });
+      return new Response(stream, { status: 200, headers: sHdr });
     }
     const waits = [];
     for (const c of this.candidates(plan.targets)) if (usable(c)) waits.push(Math.max(this.waitMs(c.kb, c.p.limits), this.waitMs(c.mb, c.mlim)));
@@ -1692,7 +1870,7 @@ export class KeyRouter {
         const aa = bf && bf.a;
         const base = bf ? bf.score : m.score;
         const src = ov.score != null ? 'custom' : hit && aa ? 'both' : hit ? 'lmarena' : aa ? 'openrouter' : 'estimate';
-        models.push({ provider: name, id: m.id, free: this.freeOf(name, m), credit: !m.free && this.freeOf(name, m), hint: !!m.hint, ctx: m.ctx, tools: m.tools, cats: m.cats, base, score: ov.score != null ? ov.score : base, custom: ov.score != null, src, arena: hit ? { rating: hit.row[0], coding: hit.row[1], math: hit.row[2], hard: hit.row[3], long: hit.row[4], vision: hit.row[5], as: hit.key, exact: hit.exact } : null, aa: aa ? { intelligence: aa.row[0], coding: aa.row[1], agentic: aa.row[2], as: aa.key, exact: aa.exact } : null, off: !!ov.off, usable, ok: hh ? hh.ok : 0, fail: hh ? hh.fail : 0 });
+        models.push({ provider: name, id: m.id, free: this.freeOf(name, m), credit: !m.free && this.freeOf(name, m), hint: !!m.hint, ctx: m.ctx, tools: m.tools, cats: m.cats, base, score: ov.score != null ? ov.score : base, custom: ov.score != null, src, arena: hit ? { rating: hit.row[0], coding: hit.row[1], math: hit.row[2], hard: hit.row[3], long: hit.row[4], vision: hit.row[5], as: hit.key, exact: hit.exact } : null, aa: aa ? { intelligence: aa.row[0], coding: aa.row[1], agentic: aa.row[2], as: aa.key, exact: aa.exact } : null, off: !!ov.off, usable, ok: hh ? hh.ok : 0, fail: hh ? hh.fail : 0, lat: hh && hh.lat ? hh.lat : null });
       }
     }
     const mode = this.cfg.settings.mode;
@@ -1789,7 +1967,10 @@ export class KeyRouter {
       });
       let status = 'nokey';
       let statusText = 'No key yet';
-      if (p.keys.length && p.enabled === false) {
+      if (p.keys.length && p.autoOff) {
+        status = 'off';
+        statusText = 'Paused automatically: ' + p.autoOff.reason;
+      } else if (p.keys.length && p.enabled === false) {
         status = 'off';
         statusText = 'Turned off';
       } else if (p.keys.length) {
@@ -1858,6 +2039,12 @@ export class KeyRouter {
         autoUpdate: p.autoUpdate !== false,
         limitsManual: !!p.limitsManual,
         allowanceManual: !!p.allowanceManual,
+        autoOff: p.autoOff || null,
+        failingSince: p.deadSince || null,
+        history: dayList.map((d) => {
+          const x = days[d] && days[d].prov && days[d].prov[name];
+          return x ? { ok: x.req || 0, fail: x.fail || 0, lim: x.lim || 0, ms: x.msN ? Math.round(x.ms / x.msN) : null } : null;
+        }),
         auto: p.auto
           ? { card: p.auto.card || null, signupUrl: p.auto.signupUrl || null, website: p.auto.website || null, notes: p.auto.notes || null, listedFree: p.auto.listedFree || 0, freeTier: p.auto.freeTier == null ? null : p.auto.freeTier, sources: p.auto.sources || {}, at: p.auto.at || null, log: p.auto.log || [], note: p.auto.learnNote || null, hinted: (p.auto.freeModels || []).length, pages: p.auto.pages || [] }
           : null,
@@ -1869,7 +2056,7 @@ export class KeyRouter {
 
     const agentKeys = this.cfg.routerKeys.map((rk) => {
       const b = this.bucket('rk:' + rk.id, 'UTC');
-      return { id: rk.id, label: rk.label, created: rk.created, mode: rk.mode || 'inherit', task: rk.task || 'detect', dailyCap: rk.dailyCap || 0, enabled: rk.enabled !== false, today: b.dayCount, tokensToday: keys1[rk.id] || { p: 0, c: 0, req: 0 }, tokens7d: keys7[rk.id] || { p: 0, c: 0, req: 0 } };
+      return { id: rk.id, label: rk.label, created: rk.created, mode: rk.mode || 'inherit', task: rk.task || 'detect', dailyCap: rk.dailyCap || 0, tokenCap: rk.tokenCap || 0, enabled: rk.enabled !== false, today: b.dayCount, tokensToday: keys1[rk.id] || { p: 0, c: 0, req: 0 }, tokens7d: keys7[rk.id] || { p: 0, c: 0, req: 0 } };
     });
     const topModels = Object.entries(models7)
       .map(([k, v]) => Object.assign({ key: k }, v))
@@ -1881,6 +2068,9 @@ export class KeyRouter {
       capacity: capacityOf(providers),
       settings: this.cfg.settings,
       paidToday: this.paidBucket().dayCount,
+      days: dayList,
+      cache: { today: (days[dayList[13]] && days[dayList[13]].cache) || 0, week: dayList.slice(-7).reduce((t, d) => t + ((days[d] && days[d].cache) || 0), 0) },
+      alerts: alertsView(this.alerts),
       totals: { today: sumDays(1), week: sumDays(7), month },
       series: dayList.map((d) => Object.assign({ day: d }, days[d] ? { p: days[d].p, c: days[d].c, req: days[d].req } : { p: 0, c: 0, req: 0 })),
       byProvider: Object.entries(prov7).map(([k, v]) => Object.assign({ name: k }, v)).sort((x, y) => y.p + y.c - (x.p + x.c)),
@@ -1909,7 +2099,7 @@ export class KeyRouter {
         catalogError: this.catalog[n] ? this.catalog[n].error : null,
       };
     }
-    const routerKeys = this.cfg.routerKeys.map((rk) => ({ id: rk.id, label: rk.label, created: rk.created, dailyCap: rk.dailyCap || 0, enabled: rk.enabled !== false, mode: rk.mode || 'inherit', task: rk.task || 'detect' }));
+    const routerKeys = this.cfg.routerKeys.map((rk) => ({ id: rk.id, label: rk.label, created: rk.created, dailyCap: rk.dailyCap || 0, tokenCap: rk.tokenCap || 0, enabled: rk.enabled !== false, mode: rk.mode || 'inherit', task: rk.task || 'detect' }));
     return { providers, routes: this.cfg.routes, settings: this.cfg.settings, routerKeys, presets: PRESETS, smart: SMART_NAMES, categories: CATEGORIES, modes: MODES };
   }
 
@@ -2097,6 +2287,13 @@ export class KeyRouter {
           next.headers = {};
           for (const [hk, hv] of Object.entries(hd)) if (/^[A-Za-z0-9-]{1,64}$/.test(hk) && typeof hv === 'string') next.headers[hk] = hv.slice(0, 200);
         }
+        // Paused automatically: stays paused until it works again or you turn it on.
+        if ('enabled' in body) {
+          if (body.enabled) delete next.deadSince;
+        } else {
+          if (cur.autoOff) next.autoOff = cur.autoOff;
+          if (cur.deadSince) next.deadSince = cur.deadSince;
+        }
         // Automatic setup: what was learned, where to read, and which settings you set by hand.
         if (cur.auto) next.auto = cur.auto;
         const docs = 'docs' in body ? String(body.docs || '').trim().slice(0, 300) : cur.docs;
@@ -2191,22 +2388,39 @@ export class KeyRouter {
     }
 
     if (a === 'settings' && m === 'PUT') {
-      const S = this.cfg.settings;
-      const ma = Number(body.maxAttempts);
-      const to = Number(body.timeoutMs);
-      if (Number.isFinite(ma) && ma >= 1 && ma <= 50) S.maxAttempts = Math.floor(ma);
-      if (Number.isFinite(to) && to >= 5000 && to <= 300000) S.timeoutMs = Math.floor(to);
-      const ws = Number(body.waitSecs);
-      if (body.waitSecs != null && Number.isFinite(ws) && ws >= 0 && ws <= 60) S.waitSecs = Math.floor(ws);
-      if ('mode' in body) {
-        if (!MODES.includes(body.mode)) throw new Error('Mode must be free, mixed or best');
-        S.mode = body.mode;
-      }
-      if ('paidDailyCap' in body) {
-        const cap = Number(body.paidDailyCap);
-        S.paidDailyCap = Number.isFinite(cap) && cap > 0 ? Math.floor(cap) : 0;
-      }
+      this.applySettings(body);
       return done();
+    }
+
+    // Alerts to Telegram or any webhook. The bot token is stored here and never sent back.
+    if (a === 'alerts') {
+      if (m === 'GET' && !b) return json(200, alertsView(this.alerts));
+      if (m === 'PUT' && !b) {
+        this.alerts = cleanAlerts(body, this.alerts, !!this.env.LEARN_LOCAL);
+        await this.ctx.storage.put('alerts', this.alerts);
+        return json(200, alertsView(this.alerts));
+      }
+      if (m === 'POST' && b === 'test') {
+        if (!this.alerts || !(this.alerts.telegram || this.alerts.webhook)) throw new Error('Add a Telegram bot or a webhook first');
+        const res = await deliver(this.alerts, 'test', 'test alert. Alerts are working.');
+        const bad = res.filter((x) => !/ ok$/.test(x));
+        if (bad.length) throw new Error('Could not send: ' + bad.join('; '));
+        return json(200, { sent: res });
+      }
+    }
+
+    // Backup without provider keys, and restore by merging.
+    if (a === 'backup' && m === 'GET') return json(200, makeBackup(this.cfg));
+    if (a === 'restore' && m === 'POST') {
+      const counts = applyBackup(this.cfg, body.backup, {
+        limits: cleanLimits,
+        allowance: cleanAllowance,
+        routes: (r) => this.validateRoutes(r),
+        settings: (st) => this.applySettings(Object.assign({}, st, { mode: MODES.includes(st.mode) ? st.mode : this.cfg.settings.mode })),
+      });
+      await this.saveCfg();
+      log({ message: 'backup restored', counts });
+      return json(200, { counts, config: this.publicConfig() });
     }
 
     if (a === 'router-keys') {
@@ -2217,7 +2431,8 @@ export class KeyRouter {
         const hash = await sha(key);
         const kmode = body.mode === 'inherit' || MODES.includes(body.mode) ? body.mode : 'inherit';
         const ktask = CATEGORIES.includes(body.task) ? body.task : 'detect';
-        this.cfg.routerKeys.push({ id: hash.slice(0, 10), hash, label, dailyCap: Number.isFinite(cap) && cap > 0 ? Math.floor(cap) : 0, enabled: true, created: Date.now(), mode: kmode, task: ktask });
+        const tcap = Number(body.tokenCap);
+        this.cfg.routerKeys.push({ id: hash.slice(0, 10), hash, label, dailyCap: Number.isFinite(cap) && cap > 0 ? Math.floor(cap) : 0, tokenCap: Number.isFinite(tcap) && tcap > 0 ? Math.floor(tcap) : 0, enabled: true, created: Date.now(), mode: kmode, task: ktask });
         await this.saveCfg();
         log({ message: 'agent key created', label });
         return json(200, { key, config: this.publicConfig() });
@@ -2230,6 +2445,10 @@ export class KeyRouter {
         if ('dailyCap' in body) {
           const cap = Number(body.dailyCap);
           rk.dailyCap = Number.isFinite(cap) && cap > 0 ? Math.floor(cap) : 0;
+        }
+        if ('tokenCap' in body) {
+          const cap = Number(body.tokenCap);
+          rk.tokenCap = Number.isFinite(cap) && cap > 0 ? Math.floor(cap) : 0;
         }
         if ('mode' in body) {
           if (body.mode !== 'inherit' && !MODES.includes(body.mode)) throw new Error('Mode must be inherit, free, mixed or best');

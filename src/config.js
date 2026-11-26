@@ -55,4 +55,16 @@ export const PRESETS = {
 // Optional hand-made routes. Smart routing (auto, coding, reasoning ...) needs none.
 export const DEFAULT_ROUTES = {};
 
-export const DEFAULT_SETTINGS = { defaultRoute: 'auto', maxAttempts: 12, timeoutMs: 90000, waitSecs: 20, mode: 'free', paidDailyCap: 100 };
+export const DEFAULT_SETTINGS = {
+  defaultRoute: 'auto',
+  maxAttempts: 12,
+  timeoutMs: 90000,
+  waitSecs: 20,
+  mode: 'free',
+  paidDailyCap: 100,
+  fastFirst: true, // among near-equal models, prefer the one that answers faster
+  cacheSecs: 0, // answer an identical request again from memory for this long (0 = off)
+  autoOffDays: 3, // pause a provider whose keys have all failed this many days (0 = never)
+  rotateDays: 90, // remind to replace keys older than this (0 = off)
+  accent: '#ff6a13', // dashboard accent color
+};

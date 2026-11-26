@@ -48,6 +48,7 @@ const firstSig = (body) => {
 };
 const GEMINI_400 = { error: { code: 400, message: 'Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly.' } };
 const limHits = [];
+const HOOKS = [];
 const QD = {};
 const mock = http.createServer(async (req, res) => {
   const j = (s, o, h = {}) => {
@@ -81,6 +82,19 @@ const mock = http.createServer(async (req, res) => {
       '| DirMock | 3 | No | 131K | Text | <a href="https://dirmock.example/keys">→</a> |', '| Other One | 9 | Phone verification | 1M | Text | - |', '<!-- END_PERMANENT_FREE -->',
       '<!-- BEGIN_BEST_MODELS -->', '| Provider | Best Free Model | Model ID | Max Context | Rate Limit |', '|---|---|---|---|---|',
       '| DirMock | <a href="x">Hinted</a> | `dm-hinted` | 131K | 12 RPM, 600 RPD |', '| | <a href="x">Other</a> | `dm-other2` | 131K | 12 RPM, 600 RPD |', '<!-- END_BEST_MODELS -->'].join('\n'));
+  }
+  // aifree.dev offers API: one provider also in freellm.net, one only here, one program that needs you to qualify.
+  if (req.method === 'GET' && req.url.startsWith('/aifree/offers'))
+    return j(200, { data: [
+      { slug: 'dirmock-free', url: 'https://aifree.dev/offer/dirmock-free', name: 'DirMock Free API', provider: 'dirmock.example', vendorUrl: 'https://dirmock.example/keys', headline: 'Mock', theCatch: 'Limits may change.', freeType: 'free-tier', models: [], cardRequired: false, status: 'verified', riskStatus: 'clean', limits: [] },
+      { slug: 'solo-free', url: 'https://aifree.dev/offer/solo-free', name: 'Solo AI Free Tier', provider: 'platform.solo.example', vendorUrl: 'https://platform.solo.example/signup?aff=abc&x=1', headline: 'Solo free', theCatch: 'Phone needed.', freeType: 'free-tier', apiBaseUrl: 'https://api.solo.example/v1', apiCompat: 'openai', models: [{ name: 'solo-1', apiId: 'solo-1', family: 'other', contextK: 128, rateLimit: { rpm: 20, rpd: 200 } }, { name: 'solo-img', apiId: 'solo-img', family: 'image', rateLimit: { rpm: 2 } }], cardRequired: false, status: 'verified', riskStatus: 'suspicious', limits: ['20 RPM'] },
+      { slug: 'uni-pack', url: 'https://aifree.dev/offer/uni-pack', name: 'Uni Pack', provider: 'uni.example', freeType: 'student-program', models: [], status: 'verified' },
+    ], meta: { total: 3, page: 1, pages: 1, license: 'CC BY 4.0' } });
+  if (req.method === 'POST' && req.url === '/hook') {
+    let hb = '';
+    for await (const c of req) hb += c;
+    HOOKS.push(JSON.parse(hb));
+    return j(200, { ok: true });
   }
   if (req.method === 'GET' && req.url.startsWith('/api/v1/benchmarks'))
     return j(200, { data: [
@@ -156,7 +170,7 @@ const mock = http.createServer(async (req, res) => {
 await new Promise((r) => mock.listen(9901, r));
 
 fs.rmSync('test/.state', { recursive: true, force: true });
-const TEST_ENV = { ADMIN_KEY: 'admin-secret-123', BENCH_URL: 'http://127.0.0.1:9901', BENCH_OR_URL: 'http://127.0.0.1:9901/api/v1', DIR_URL: 'http://127.0.0.1:9901/dir', LEARN_LOCAL: '1' };
+const TEST_ENV = { ADMIN_KEY: 'admin-secret-123', BENCH_URL: 'http://127.0.0.1:9901', BENCH_OR_URL: 'http://127.0.0.1:9901/api/v1', DIR_URL: 'http://127.0.0.1:9901/dir', AIFREE_URL: 'http://127.0.0.1:9901/aifree/offers', LEARN_LOCAL: '1' };
 fs.writeFileSync('test/test.env', Object.entries(TEST_ENV).map(([k, v]) => k + '=' + v).join('\n') + '\n');
 Object.assign(process.env, TEST_ENV);
 // KR_TARGET=vercel runs the same checks against the Vercel entry point (api/index.js) with a local Redis stand-in.
@@ -728,6 +742,26 @@ try {
   }
   step('directory: discover list, settings filled in on connect, hand-set limits kept');
 
+  // aifree.dev joins the list: same provider merged, new ones added, programs you must qualify for left out
+  {
+    const dv = (await admin('GET', 'discover')).body;
+    const dm = dv.providers.find((e) => e.id === 'dirmock');
+    assert.deepEqual(dm.sources, ['freellm', 'aifree']);
+    assert.equal(dm.catch, 'Limits may change.');
+    assert.equal(dm.offerUrl, 'https://aifree.dev/offer/dirmock-free');
+    const solo = dv.providers.find((e) => e.id === 'solo');
+    assert.ok(solo, JSON.stringify(dv.providers.map((e) => e.id)));
+    assert.equal(solo.baseUrl, 'https://api.solo.example/v1');
+    assert.equal(solo.keyUrl, 'https://platform.solo.example/signup?x=1', 'referral parameter removed');
+    assert.equal(solo.risk, 'suspicious');
+    assert.deepEqual(solo.limits, { rpm: 20, rpd: 200 });
+    assert.deepEqual(solo.models.map((m) => m.id), ['solo-1'], 'image models left out');
+    assert.ok(!dv.providers.find((e) => e.id === 'uni'), 'student program left out');
+    assert.equal(dv.sources.find((x) => x.id === 'aifree').n, 2);
+    assert.equal(dv.sources.find((x) => x.id === 'aifree').license, 'CC BY 4.0');
+  }
+  step('aifree.dev offers merged into Discover');
+
   // reading a provider's own docs with a free model
   {
     await admin('PUT', 'providers/lp', { baseUrl: base, billing: 'per-model', docs: base + '/site/docs' });
@@ -769,6 +803,89 @@ try {
     for (const n of ['rl', 'nf', 'cu']) await admin('DELETE', 'providers/' + n);
   }
   step('429 on a key check shows as rate limited; 404 explains the base URL; logos endpoint');
+
+  // settings, response cache, token budgets, alerts, speed and health history, backup and restore
+  {
+    assert.equal((await admin('PUT', 'settings', { accent: 'red' })).status, 400);
+    const st = (await admin('PUT', 'settings', { accent: '#C6F135', cacheSecs: 60, fastFirst: false })).body.settings;
+    assert.equal(st.accent, '#c6f135');
+    assert.equal(st.cacheSecs, 60);
+    assert.equal(st.fastFirst, false);
+    assert.equal((await admin('PUT', 'alerts', { webhook: 'ftp://nope' })).status, 400);
+    assert.equal((await admin('PUT', 'alerts', { telegramToken: 'nope', telegramChat: '1' })).status, 400);
+    const tg = (await admin('PUT', 'alerts', { telegramToken: '123456:' + 'A'.repeat(35), telegramChat: '987654' })).body;
+    assert.equal(tg.telegram.chat, '987654');
+    assert.ok(!JSON.stringify(tg).includes('A'.repeat(20)), 'bot token never returned');
+    const al = (await admin('PUT', 'alerts', { telegramToken: '', telegramChat: '', webhook: base + '/hook', events: { budget: true } })).body;
+    assert.equal(al.telegram, null);
+    assert.ok(al.on);
+    assert.equal((await admin('POST', 'alerts/test', {})).status, 200);
+    assert.ok(HOOKS.some((x) => x.event === 'test' && x.source === 'keyrouter'), JSON.stringify(HOOKS));
+
+    await admin('PUT', 'providers/ck', { baseUrl: base, billing: 'free' });
+    await admin('POST', 'providers/ck/keys', { key: 'TK-key-xxxx', label: '' });
+    const kr = (await admin('POST', 'router-keys', { label: 'budget', tokenCap: 200, mode: 'free' })).body.key;
+    const n0 = calls.filter((c) => c.startsWith('TK-key')).length;
+    const same = { model: 'ck/tk-model', messages: [{ role: 'user', content: 'same' }] };
+    const r1 = await post(same, kr);
+    assert.equal(r1.status, 200);
+    assert.equal(r1.headers.get('x-router-cache'), null);
+    await r1.text();
+    const r2 = await post(same, kr);
+    assert.equal(r2.headers.get('x-router-cache'), 'hit');
+    assert.match(await r2.text(), /counted/);
+    assert.equal(calls.filter((c) => c.startsWith('TK-key')).length, n0 + 1, 'the repeat never reached the provider');
+    const r3 = await post({ model: 'ck/tk-model', messages: [{ role: 'user', content: 'other' }] }, kr);
+    assert.equal(r3.status, 200);
+    await r3.text();
+    const r4 = await post({ model: 'ck/tk-model', messages: [{ role: 'user', content: 'third' }] }, kr);
+    assert.equal(r4.status, 429);
+    assert.match((await r4.json()).error.message, /token budget/);
+    for (let i = 0; i < 20 && !HOOKS.some((x) => x.event === 'budget'); i++) await new Promise((r) => setTimeout(r, 100));
+    assert.ok(HOOKS.some((x) => x.event === 'budget' && /budget/.test(x.text)), JSON.stringify(HOOKS));
+    const d = (await admin('GET', 'dashboard')).body;
+    const ck = d.providers.find((p) => p.name === 'ck');
+    const today = ck.history[ck.history.length - 1];
+    assert.ok(today.ok >= 2, JSON.stringify(ck.history.slice(-2)));
+    assert.ok(today.ms != null, 'answer time recorded');
+    assert.equal(d.cache.today, 1);
+    assert.equal(d.agentKeys.find((k) => k.label === 'budget').tokenCap, 200);
+    const cv = (await admin('POST', 'benchmarks/refresh', {})).body;
+    assert.ok(cv.models.find((m) => m.provider === 'ck' && m.id === 'tk-model').lat != null, 'speed shown per model');
+
+    const bk = (await admin('GET', 'backup')).body;
+    assert.equal(bk.kind, 'keyrouter-backup');
+    assert.ok(!JSON.stringify(bk).includes('TK-key-xxxx'), 'provider keys left out');
+    assert.equal(bk.providers.ck.keyCount, 1);
+    assert.ok(bk.routerKeys.some((k) => k.label === 'budget' && k.tokenCap === 200));
+    assert.equal((await admin('POST', 'restore', { backup: { kind: 'other' } })).status, 400);
+    await admin('DELETE', 'providers/ck');
+    const rs = (await admin('POST', 'restore', { backup: bk })).body;
+    assert.ok(rs.counts.providers >= 1, JSON.stringify(rs.counts));
+    assert.equal(rs.config.providers.ck.baseUrl, base);
+    assert.equal(rs.config.providers.ck.keys.length, 0, 'a restored provider needs its key again');
+    assert.equal(rs.counts.agentKeys, 0, 'agent keys already here are not doubled');
+
+    // a provider whose every key fails is marked failing and sends an alert
+    await admin('PUT', 'alerts', { events: { errors: true } });
+    await admin('PUT', 'providers/dead', { baseUrl: base, billing: 'free' });
+    await admin('POST', 'providers/dead/keys', { key: 'BAD-key-xxxx', label: '' });
+    let dp = null;
+    for (let i = 0; i < 40; i++) {
+      dp = (await admin('GET', 'dashboard')).body.providers.find((p) => p.name === 'dead');
+      if (dp.failingSince) break;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    assert.ok(dp.failingSince, 'failing provider noticed');
+    for (let i = 0; i < 20 && !HOOKS.some((x) => x.event === 'errors'); i++) await new Promise((r) => setTimeout(r, 100));
+    assert.ok(HOOKS.some((x) => x.event === 'errors' && /dead is failing/.test(x.text)), JSON.stringify(HOOKS));
+    assert.ok(!JSON.stringify(HOOKS).includes('BAD-key-xxxx'), 'key values never sent');
+
+    for (const n of ['ck', 'dead']) await admin('DELETE', 'providers/' + n);
+    await admin('PUT', 'settings', { accent: '#ff6a13', cacheSecs: 0, fastFirst: true });
+    await admin('PUT', 'alerts', { webhook: '' });
+  }
+  step('settings, cache, token budgets, alerts, speed, health history, backup and restore, failing providers');
 
   // brute force lockout on admin key
   for (let i = 0; i < 10; i++) await admin('GET', 'config', null, 'guess' + i);

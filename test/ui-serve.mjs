@@ -13,6 +13,11 @@ http.createServer(async (req, res) => {
     { provider: 'LLM7.io', slug: 'llm7-io', status: 'Operational', free_models_count: 11, max_context: 1048576, verified_protocols: ['OpenAI Chat Completions'], tagline: 'Free GPT-4o-mini access.', base_url: 'https://api.llm7.io/v1', api_key_url: 'https://token.llm7.io' },
     { provider: 'Perch AI', slug: 'perch-ai', status: 'Operational', free_models_count: 3, max_context: 0, verified_protocols: ['No public API'], tagline: 'Chat workbench only.', base_url: '', api_key_url: '' },
   ] });
+  if (req.method === 'GET' && req.url.startsWith('/aifree/offers')) return j(200, { data: [
+    { slug: 'agnes-ai-free-api', url: 'https://aifree.dev/offer/agnes-ai-free-api', name: 'Agnes AI Free API', provider: 'platform.agnes-ai.com', vendorUrl: 'https://platform.agnes-ai.com', headline: 'Free OpenAI-compatible API for Agnes text, image and video Flash models', theCatch: 'Free video is a limited-time promotion; limits may be adjusted.', freeType: 'free-tier', apiBaseUrl: 'https://apihub.agnes-ai.com/v1', apiCompat: 'openai', models: [{ name: 'agnes-2.5-flash', apiId: 'agnes-2.5-flash', family: 'other', contextK: 512, rateLimit: { rpm: 10 } }, { name: 'agnes-3.0-flash', apiId: 'agnes-3.0-flash', family: 'other', rateLimit: { rpm: 10 } }], cardRequired: false, status: 'verified', riskStatus: 'clean', limits: ['Free text models', '20 RPM'] },
+    { slug: 'agentrouter-free-credits', url: 'https://aifree.dev/offer/agentrouter-free-credits', name: 'AgentRouter Free Credits', provider: 'agentrouter.org', vendorUrl: 'https://agentrouter.org/register?aff=N5wg', headline: 'Free AI coding credits: $25 per daily check-in', theCatch: 'Only supported coding clients are allowed.', freeType: 'free-credits', amount: { unit: 'USD', value: 25 }, refill: 'daily', models: [{ name: 'claude-opus-5-5', family: 'claude', rateLimit: {} }], cardRequired: false, status: 'verified', riskStatus: 'suspicious', limits: [] },
+    { slug: 'llm7-free', url: 'https://aifree.dev/offer/llm7-free', name: 'LLM7.io Free API', provider: 'llm7.io', vendorUrl: 'https://token.llm7.io', headline: 'Free GPT-class models', theCatch: 'Anonymous use has lower limits.', freeType: 'free-tier', apiBaseUrl: 'https://api.llm7.io/v1', apiCompat: 'openai', models: [], cardRequired: false, status: 'verified', riskStatus: 'clean', limits: [] },
+  ], meta: { total: 3, page: 1, pages: 1 } });
   if (req.method === 'GET' && req.url === '/dir/README.md') {
     res.writeHead(200, { 'content-type': 'text/plain' });
     return res.end(['<!-- BEGIN_PERMANENT_FREE -->', '| Provider | Free Models | Credit Card? | Max Context | Modalities | Get API Key |', '|---|---|---|---|---|---|',
@@ -62,7 +67,7 @@ http.createServer(async (req, res) => {
 }).listen(9901);
 
 fs.rmSync('test/.state', { recursive: true, force: true });
-fs.writeFileSync('test/test.env', 'ADMIN_KEY=admin-secret-123\nBENCH_OFF=1\nLEARN_OFF=1\nDIR_URL=http://127.0.0.1:9901/dir\n');
+fs.writeFileSync('test/test.env', 'ADMIN_KEY=admin-secret-123\nBENCH_OFF=1\nLEARN_OFF=1\nDIR_URL=http://127.0.0.1:9901/dir\nAIFREE_URL=http://127.0.0.1:9901/aifree/offers\n');
 const proc = spawn('npx', ['wrangler', 'dev', '--port', '9800', '--ip', '127.0.0.1', '--env-file', 'test/test.env', '--persist-to', 'test/.state'], { stdio: 'ignore', detached: true });
 process.on('SIGTERM', () => { try { process.kill(-proc.pid); } catch {} process.exit(0); });
 

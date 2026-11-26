@@ -78,6 +78,11 @@
     chevR: ['M9 6l6 6-6 6'],
     ext: ['M14 4h6v6', 'M20 4l-9 9', 'M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5'],
     compass: ['M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z', 'M15.5 8.5l-2 5-5 2 2-5z'],
+    bell: ['M18 16v-5a6 6 0 1 0-12 0v5l-2 2h16z', 'M10 21h4'],
+    download: ['M12 4v11', 'M7 10l5 5 5-5', 'M5 20h14'],
+    upload: ['M12 20V9', 'M7 14l5-5 5 5', 'M5 4h14'],
+    palette: ['M12 21a9 9 0 1 1 9-9c0 2-1.5 3-3 3h-2a2 2 0 0 0-1.5 3.3c.6.7.3 2.7-2.5 2.7z', 'M7.5 11.5h.01', 'M10 7.5h.01', 'M14.5 7.5h.01', 'M17 11h.01'],
+    shield: ['M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z', 'M9 12l2 2 4-4'],
     sparkle: ['M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z', 'M19 15l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z']
   };
   var SVGNS = 'http://www.w3.org/2000/svg';
@@ -130,6 +135,51 @@
     applyTheme();
   }
   applyTheme();
+
+  // ---------- accent color ----------
+  // One accent (the 10 in 60/30/10). From any hex we work out readable text, a soft tint and a focus ring
+  // for both themes. Orange keeps its hand-tuned values.
+  var ACCENTS = [['#ff6a13', 'Orange'], ['#c6f135', 'Lime'], ['#2563eb', 'Blue'], ['#7c3aed', 'Violet'], ['#e11d74', 'Pink'], ['#0d9488', 'Teal'], ['#f5b000', 'Gold']];
+  var ACCENT_DEFAULT = '#ff6a13';
+  function hexRgb(x) { var n = parseInt(String(x).slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; }
+  function rgbHex(c) { return '#' + c.map(function (v) { return ('0' + Math.round(Math.max(0, Math.min(255, v))).toString(16)).slice(-2); }).join(''); }
+  function mixRgb(a, b, t) { return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]; }
+  function luma(c) {
+    var v = c.map(function (x) { x /= 255; return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4); });
+    return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+  }
+  function contrastOf(a, b) { var x = luma(a), y = luma(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); }
+  // Step toward black or white until the text reads on that background.
+  function readable(c, bg, toward, min) {
+    for (var t = 0; t <= 1; t += 0.05) { var m = mixRgb(c, toward, t); if (contrastOf(m, bg) >= min) return rgbHex(m); }
+    return rgbHex(toward);
+  }
+  function accentCss(hex) {
+    var c = hexRgb(hex);
+    var W = [255, 255, 255], K = [28, 28, 30], CARD_D = [25, 25, 28];
+    var on = contrastOf(c, W) >= 2.8 ? '#ffffff' : '#1c1c1e';
+    var dAcc = contrastOf(c, CARD_D) >= 3 ? hex : readable(c, CARD_D, W, 3);
+    var dc = hexRgb(dAcc);
+    var light = { accent: hex, 'accent-ink': readable(c, W, [0, 0, 0], 4.6), 'accent-soft': rgbHex(mixRgb(c, W, 0.88)), 'accent-ring': 'rgba(' + c.join(', ') + ', 0.18)', 'on-accent': on };
+    var dark = { accent: dAcc, 'accent-ink': readable(dc, CARD_D, W, 5), 'accent-soft': 'rgba(' + dc.join(', ') + ', 0.15)', 'accent-ring': 'rgba(' + dc.join(', ') + ', 0.3)', 'on-accent': contrastOf(dc, W) >= 2.8 ? '#ffffff' : '#111113' };
+    var block = function (o) { return Object.keys(o).map(function (k) { return '--' + k + ': ' + o[k] + ';'; }).join(' '); };
+    return ':root { ' + block(light) + ' } :root[data-theme=dark] { ' + block(dark) + ' } @media (prefers-color-scheme: dark) { :root:not([data-theme=light]) { ' + block(dark) + ' } }';
+  }
+  var ACCENT = ACCENT_DEFAULT;
+  try { ACCENT = localStorage.getItem('kr_accent') || ACCENT_DEFAULT; } catch (e) { ACCENT = ACCENT_DEFAULT; }
+  function applyAccent(hex, keep) {
+    if (!/^#[0-9a-f]{6}$/i.test(hex || '')) hex = ACCENT_DEFAULT;
+    hex = hex.toLowerCase();
+    ACCENT = hex;
+    var el = document.getElementById('kr-accent');
+    if (hex === ACCENT_DEFAULT) { if (el) el.remove(); }
+    else {
+      if (!el) { el = document.createElement('style'); el.id = 'kr-accent'; document.head.appendChild(el); }
+      el.textContent = accentCss(hex);
+    }
+    if (keep !== false) { try { localStorage.setItem('kr_accent', hex); } catch (e) { /* private mode */ } }
+  }
+  applyAccent(ACCENT);
 
   // ---------- DOM helper ----------
   function h(tag, props) {
@@ -421,8 +471,8 @@
   }
   function meter(label, used, max, kind) {
     var pct = max ? Math.min(100, Math.round((used / max) * 100)) : 0;
-    // Red only once the limit is reached; orange when it is getting close.
-    var tone = max && used >= max ? 'red' : pct >= 80 ? '' : kind || 'ink';
+    // Red once the limit is reached, amber when it is getting close, the accent otherwise.
+    var tone = max && used >= max ? 'red' : pct >= 80 ? 'warn' : kind == null ? 'ink' : kind;
     return h('div', null,
       h('div', { class: 'meter-lbl' }, h('span', null, label), h('span', null, h('b', null, fmt(used)), max ? ' / ' + fmt(max) : '')),
       h('div', { class: 'track ' + tone, role: 'meter', 'aria-valuenow': String(used), 'aria-valuemax': String(max || 0), 'aria-label': label }, h('i', { style: { width: (max ? Math.max(pct, used ? 2 : 0) : 0) + '%' } })));
@@ -517,7 +567,7 @@
   }
   function fail(e) { if (e && e.message !== 'unauthorized') toast(e.message, true); }
   function loadAll() {
-    return Promise.all([api('GET', 'config'), api('GET', 'dashboard')]).then(function (r) { CFG = r[0]; DASH = r[1]; });
+    return Promise.all([api('GET', 'config'), api('GET', 'dashboard')]).then(function (r) { CFG = r[0]; DASH = r[1]; if (CFG.settings && CFG.settings.accent && CFG.settings.accent !== ACCENT) applyAccent(CFG.settings.accent); });
   }
   function reload() { return loadAll().then(render); }
 
@@ -639,13 +689,13 @@
     var refreshB = btn('Refresh list', function () {
       busy(refreshB, 'Loading', api('POST', 'discover/refresh', {})).then(function (d) { DISC = d; draw(); toast('Provider list updated'); }, fail);
     }, 'ghost sm', 'refresh');
-    main.append(header('Discover', 'Providers with free or cheap LLM APIs, from a public directory that is checked every day. Create an account, then add it in one click.', refreshB), body);
+    main.append(header('Discover', 'Providers with free or cheap LLM APIs, from two public directories checked every day. Create an account, then add it in one click.', refreshB), body);
     var DISC = null;
     var grid = h('div', { class: 'dgrid' });
     var countEl = h('span', { class: 'count' });
     var search = h('input', { type: 'search', name: 'discover-search', placeholder: 'Search providers or models', autocomplete: 'off', spellcheck: 'false', 'aria-label': 'Search the directory', value: DQ,
       oninput: function () { DQ = search.value.trim().toLowerCase(); list(); } });
-    var filters = seg([['all', 'All'], ['nocard', 'No card'], ['open', 'Not connected'], ['new', 'New']], DFILTER, function (v) { DFILTER = v; list(); }, 'Filter');
+    var filters = seg([['all', 'All'], ['nocard', 'No card'], ['free', 'Free tier'], ['open', 'Not connected'], ['new', 'New']], DFILTER, function (v) { DFILTER = v; list(); }, 'Filter');
     var srcLine = h('div', { class: 'hint', style: { margin: '-4px 0 4px' } });
     body.append(h('div', { class: 'ptools' }, h('div', { class: 'row', style: { gap: '12px', flexWrap: 'wrap' } }, filters, h('div', { class: 'section-label' }, 'Providers', countEl)), h('label', { class: 'search' }, icon('search'), search)), srcLine, grid);
     function noCard(e) { return /^no\b/i.test(e.card || '') || /registration/i.test(e.card || ''); }
@@ -654,21 +704,29 @@
       var all = DISC.providers;
       var shown = all.filter(function (e) {
         if (DFILTER === 'nocard' && !noCard(e)) return false;
+        if (DFILTER === 'free' && !(e.freeModels || e.tier === 'free')) return false;
         if (DFILTER === 'open' && e.connected) return false;
         if (DFILTER === 'new' && !e.isNew) return false;
         if (!DQ) return true;
-        var hay = (e.name + ' ' + e.tagline + ' ' + (e.baseUrl || '') + ' ' + e.models.map(function (m) { return m.id; }).join(' ')).toLowerCase();
+        var hay = (e.name + ' ' + (e.tagline || '') + ' ' + (e.catch || '') + ' ' + (e.baseUrl || '') + ' ' + e.models.map(function (m) { return m.id; }).join(' ')).toLowerCase();
         return hay.indexOf(DQ) >= 0;
       });
       countEl.textContent = shown.length === all.length ? String(all.length) : shown.length + ' of ' + all.length;
       grid.replaceChildren.apply(grid, shown.length ? shown.map(dcard) : [h('div', { class: 'card empty' }, all.length ? 'No provider matches.' : 'The directory is empty right now. Try Refresh list.')]);
     }
     function draw() {
-      srcLine.replaceChildren(
-        'Source: ', h('a', { href: DISC.source.url, target: '_blank', rel: 'noopener noreferrer', title: 'Opens in a new tab' }, DISC.source.name, icon('ext')),
-        DISC.updated ? ', updated ' + dayLabel(DISC.updated) + '. ' : '. ',
-        DISC.error ? 'Last refresh failed: ' + DISC.error + '. ' : '',
-        'Limits and card rules come from the directory; KeyRouter checks the real ones once you connect.');
+      var srcs = DISC.sources || [DISC.source];
+      var parts = ['Sources: '];
+      srcs.forEach(function (x, i) {
+        if (i) parts.push(' and ');
+        parts.push(h('a', { href: x.url, target: '_blank', rel: 'noopener noreferrer', title: 'Opens in a new tab' }, x.name, icon('ext')));
+        if (x.license) parts.push(' (' + x.license + ')');
+        if (x.ok === false) parts.push(' (not reachable: ' + (x.error || 'error') + ')');
+      });
+      parts.push(DISC.at ? ', checked ' + ago(DISC.at) + '. ' : '. ');
+      if (DISC.error) parts.push('Last refresh failed: ' + DISC.error + '. ');
+      parts.push('Limits and card rules come from the directories; KeyRouter checks the real ones once you connect.');
+      srcLine.replaceChildren.apply(srcLine, parts);
       list();
     }
     function addName(e) {
@@ -684,19 +742,22 @@
         e.freeModels ? h('span', { class: 'tag free' }, plural(e.freeModels, 'free model')) : null,
         e.card ? h('span', { class: 'tag ' + (noCard(e) ? 'free' : 'paidt'), title: 'What sign-up asks for' }, /^no$/i.test(cardTxt) ? 'No card' : cardTxt) : null,
         e.maxContext ? h('span', { class: 'tag' }, fmtCtx(e.maxContext) + ' context') : null,
-        e.limitText ? h('span', { class: 'tag', title: 'Free limit' }, e.limitText) : null,
+        e.limitText ? h('span', { class: 'tag', title: 'Free limit: ' + e.limitText }, e.limitText.length > 44 ? e.limitText.slice(0, 42) + '…' : e.limitText) : null,
         e.credits ? h('span', { class: 'tag credit', title: 'Credits' }, e.credits) : null,
         e.isNew ? h('span', { class: 'tag new' }, 'New') : null,
-        e.status && !/operational/i.test(e.status) ? h('span', { class: 'tag paidt' }, e.status) : null,
-        !e.openai ? h('span', { class: 'tag paidt', title: e.protocols }, 'Not OpenAI-compatible') : null];
+        e.status && !/operational|verified|listed/i.test(e.status) ? h('span', { class: 'tag paidt' }, e.status) : null,
+        e.risk ? h('span', { class: 'tag bad', title: 'aifree.dev marks this offer as ' + e.risk + '. Read the details before you sign up.' }, 'Flagged ' + e.risk) : null,
+        e.openai === false ? h('span', { class: 'tag paidt', title: e.protocols || '' }, 'Not OpenAI-compatible') : null];
       var addB = btn('Add', function () {
         PREFILL = { name: nm, baseUrl: e.baseUrl, docs: e.website };
         go('providers');
       }, 'orange sm', 'plus', e.baseUrl ? null : { disabled: true, title: 'No public API address listed' });
       return h('article', { class: 'card dcard' + (e.connected ? ' on' : '') },
-        h('div', { class: 'dc-head' }, plogo(nm, '', e.baseUrl || e.website), h('div', { class: 'dc-t' }, h('h3', null, e.name), h('div', { class: 'hint' }, (e.baseUrl || e.website || '').replace(/^https:\/\//, ''))),
+        h('div', { class: 'dc-head' }, plogo(nm, '', e.baseUrl || e.website), h('div', { class: 'dc-t' }, h('h3', null, e.name), h('div', { class: 'hint dc-url' }, h('span', null, (e.baseUrl || e.website || '').replace(/^https:\/\//, '')),
+            e.offerUrl ? h('a', { class: 'dc-src', href: e.offerUrl, target: '_blank', rel: 'noopener noreferrer', title: 'Offer details on aifree.dev (CC BY 4.0)' }, 'aifree.dev', icon('ext')) : null)),
           e.connected ? h('span', { class: 'pill ready' }, icon('check'), 'Connected') : null),
         e.tagline ? h('p', { class: 'dc-tag' }, e.tagline) : null,
+        e.catch ? h('p', { class: 'dc-catch' }, h('b', null, 'Catch: '), e.catch) : null,
         h('div', { class: 'dc-chips' }, chips),
         e.models.length ? h('div', { class: 'dc-models' }, e.models.slice(0, 3).map(function (m) { return h('div', { class: 'dc-m' }, h('span', { class: 'mono' }, m.id), m.limit && m.limit !== '-' ? h('span', { class: 'faint' }, m.limit) : null); })) : null,
         h('div', { class: 'dc-foot' },
@@ -727,6 +788,28 @@
   function page(first) { return h('div', { class: 'page' + (first ? ' enter' : '') }); }
 
   // ---------- overview ----------
+  // Things that need you: paused or failing providers, old keys, agents out of budget.
+  function attentionCard(d) {
+    var items = [];
+    var rd = d.settings.rotateDays == null ? 90 : d.settings.rotateDays;
+    var days = function (t) { return Math.floor((Date.now() - t) / 86400000); };
+    d.providers.forEach(function (p) {
+      if (p.autoOff) items.push(['alert', cap(p.name) + ' was paused automatically: ' + p.autoOff.reason, 'providers', p.name]);
+      else if (p.failingSince) items.push(['alert', cap(p.name) + ' has been failing since ' + ago(p.failingSince), 'providers', p.name]);
+      if (rd) p.keys.forEach(function (k) { if (k.added && days(k.added) > rd) items.push(['clock', cap(p.name) + ' key ' + k.mask + ' is ' + days(k.added) + ' days old', 'providers', p.name]); });
+    });
+    d.agentKeys.forEach(function (k) {
+      if (k.enabled && ((k.dailyCap && k.today >= k.dailyCap) || (k.tokenCap && tok(k.tokensToday) >= k.tokenCap))) items.push(['bolt', 'Agent key "' + k.label + '" reached its daily limit', 'keys']);
+      else if (rd && k.enabled && k.created && days(k.created) > rd) items.push(['clock', 'Agent key "' + k.label + '" is ' + days(k.created) + ' days old', 'keys']);
+    });
+    if (!items.length) return null;
+    return h('section', { class: 'card mt attn' },
+      h('div', { class: 'card-head' }, h('div', null, h('h3', null, 'Needs a look'), h('div', { class: 'sub' }, plural(items.length, 'thing') + ' to check'))),
+      h('div', { class: 'list' }, items.slice(0, 6).map(function (it) {
+        return h('div', { class: 'attn-row' }, h('span', { class: 'attn-ic' }, icon(it[0])), h('span', { class: 'grow1' }, it[1]),
+          btn('Open', function () { if (it[3]) EXPANDED[it[3]] = true; go(it[2]); }, 'ghost sm'));
+      })));
+  }
   function viewOverview(main) {
     var body = page(true);
     main.append(header(hello(), new Date().toLocaleDateString('en', { weekday: 'long', month: 'long', day: 'numeric' }) + '. Here is what your agents used.', refreshBtn()), body);
@@ -753,10 +836,11 @@
         h('div', { class: 'grid g4' },
           kpi('orange', 'Tokens today', 'bolt', tokBig, [h('span', { class: 'chip' }, fmt(t.today.p) + ' in'), h('span', { class: 'chip' }, fmt(t.today.c) + ' out')]),
           kpi('', 'Requests today', 'pulse', reqBig, plural(t.week.req, 'request') + ' this week'),
-          kpi('lime', 'Free models ready', 'check', fmt(readyFree), 'Tested and working on ' + plural(ready.length, 'provider')),
+          kpi('good', 'Free models ready', 'check', fmt(readyFree), 'Tested and working on ' + plural(ready.length, 'provider')),
           kpi('dark', 'Providers ready', 'server', h('div', { class: 'big' }, String(ready.length), h('small', null, '/ ' + keyed.length)),
-            problems.length ? plural(problems.length, 'provider') + ' need a look' : 'Everything connected is healthy')),
+            problems.length ? plural(problems.length, 'provider') + (problems.length === 1 ? ' needs' : ' need') + ' a look' : 'Everything connected is healthy')),
         capacityRow(d.capacity, first),
+        attentionCard(d),
         h('div', { class: 'grid g21 mt' + (first ? ' grow' : '') },
           h('section', { class: 'card' },
             h('div', { class: 'card-head' }, h('div', null, h('h3', null, 'Tokens per day'), h('div', { class: 'sub' }, 'Last 14 days, input plus output')), h('span', { class: 'chip' }, fmt(tok(t.week)) + ' this week')),
@@ -796,7 +880,7 @@
   // Bar colour by how much is used: plenty left, running low, limit reached.
   function capTone(used, limit) {
     var r = limit ? used / limit : 0;
-    return r >= 1 ? 'red' : r >= 0.8 ? '' : 'lime';
+    return r >= 1 ? 'red' : r >= 0.8 ? 'warn' : '';
   }
   function capCard(kind, c) {
     var isTok = kind === 'tokens';
@@ -808,7 +892,7 @@
       h('div', { class: 'card-head' },
         h('div', null, h('h3', null, isTok ? 'Free tokens today' : 'Free requests today'),
           h('div', { class: 'sub' }, c.known ? 'Across ' + plural(c.known, 'provider') + ' with a daily limit' : 'No provider has a daily limit yet')),
-        h('span', { class: 'cap-ic' + (isTok ? ' lime' : '') }, icon(isTok ? 'bolt' : 'pulse'))),
+        h('span', { class: 'cap-ic' + (isTok ? ' good' : '') }, icon(isTok ? 'bolt' : 'pulse'))),
       h('div', { class: 'cap-big' },
         h('b', { class: 'num' }, fmt(c.known ? c.left : c.used)),
         h('span', null, c.known ? unit + ' left' : unit + ' used today')),
@@ -1215,18 +1299,23 @@
     var open = !!EXPANDED[p.name];
     var bid = 'pb-' + p.name;
     var card;
+    var offDays = DASH.settings.autoOffDays == null ? 3 : DASH.settings.autoOffDays;
+    var backB = p.autoOff ? btn('Turn back on', function () {
+      busy(backB, 'Turning on', api('PUT', 'providers/' + encodeURIComponent(p.name), { enabled: true }).then(function () { return loadAll(); })).then(function () { toast(cap(p.name) + ' is on again'); render(); }, fail);
+    }, 'sm') : null;
     var inner = h('div', { class: 'pinner' },
-      p.status === 'error' || p.status === 'limited' || p.status === 'warn' ? h('div', { class: 'note bad' }, icon('alert'), h('span', { style: { minWidth: '0', overflowWrap: 'anywhere' } }, p.statusText)) : null,
+      p.autoOff ? h('div', { class: 'note bad' }, icon('alert'), h('span', { style: { minWidth: '0', overflowWrap: 'anywhere', flex: '1' } }, 'Paused automatically ' + ago(p.autoOff.at) + ' after ' + offDays + ' days of failures: ' + p.autoOff.reason + '. Checked again once a day; it turns back on when a key works.'), backB) : null,
+      !p.autoOff && (p.status === 'error' || p.status === 'limited' || p.status === 'warn') ? h('div', { class: 'note bad' }, icon('alert'), h('span', { style: { minWidth: '0', overflowWrap: 'anywhere' } }, p.statusText + (p.failingSince && offDays ? '. Failing since ' + ago(p.failingSince) + '; paused automatically after ' + offDays + ' days.' : ''))) : null,
       p.note ? h('div', { class: 'note' }, icon('info'), h('span', null, p.note)) : null,
       h('div', { class: 'stats' },
-        h('button', { type: 'button', class: 'stat lime', 'aria-label': 'See ' + p.free + ' free models', onclick: function () { openModels(p.name, 'free'); } }, h('span', { class: 'go' }, icon('chevR')), h('div', { class: 'v' }, fmt(p.free)), h('div', { class: 'k' }, 'Free models')),
+        h('button', { type: 'button', class: 'stat good', 'aria-label': 'See ' + p.free + ' free models', onclick: function () { openModels(p.name, 'free'); } }, h('span', { class: 'go' }, icon('chevR')), h('div', { class: 'v' }, fmt(p.free)), h('div', { class: 'k' }, 'Free models')),
         h('button', { type: 'button', class: 'stat', 'aria-label': 'See ' + p.paid + ' paid models', onclick: function () { openModels(p.name, 'paid'); } }, h('span', { class: 'go' }, icon('chevR')), h('div', { class: 'v' }, fmt(p.paid)), h('div', { class: 'k' }, 'Paid models')),
         h('div', { class: 'stat' }, h('div', { class: 'v' }, fmt(tok(p.tokensToday))), h('div', { class: 'k' }, 'Tokens today')),
         h('div', { class: 'stat' }, h('div', { class: 'v' }, fmt(keysReq)), h('div', { class: 'k' }, 'Requests today'))),
       testLine,
       autoBox(p),
       p.allowance || p.tpd ? h('div', { class: 'meters wide' },
-        p.allowance ? h('div', null, meter('Free tokens' + (p.allowance.per === 'day' ? ' today' : p.allowance.per === 'month' ? ' this month' : p.allowance.per === 'once' ? '' : ' (' + p.allowance.per.toUpperCase() + ' window)'), p.allowance.used, p.allowance.tokens, 'lime'),
+        p.allowance ? h('div', null, meter('Free tokens' + (p.allowance.per === 'day' ? ' today' : p.allowance.per === 'month' ? ' this month' : p.allowance.per === 'once' ? '' : ' (' + p.allowance.per.toUpperCase() + ' window)'), p.allowance.used, p.allowance.tokens, ''),
           h('div', { class: 'hint', style: { marginTop: '6px' } }, (p.allowance.left > 0 ? (p.credit ? plural(p.credit, 'paid model') + ' count as free until this runs out.' : 'Paid models count as free until this runs out.') : 'Used up. Paid models are paid again' + (p.allowance.per === 'once' ? '.' : ' until it resets.')) + (p.allowance.resetAt ? ' Refills ' + whenIn(p.allowance.resetAt) + '.' : ''))) : null,
         p.tpd ? h('div', null, meter('Tokens today', tok(p.tokensToday), p.tpd), h('div', { class: 'hint', style: { marginTop: '6px' } }, 'KeyRouter stops using this provider for the day at the limit.')) : null) : null,
       h('div', { class: 'stack' },
@@ -1298,18 +1387,24 @@
           sw(p.autoUpdate, function (on) { act(api('PUT', 'providers/' + encodeURIComponent(p.name), { autoUpdate: on }), on ? 'Automatic updates on' : 'Automatic updates off').then(reload, function () {}); }, 'Keep ' + p.name + ' settings updated'))));
   }
 
+  // A key older than the reminder in Settings gets a small note.
+  function keyAgeTag(added) {
+    var rd = DASH.settings.rotateDays == null ? 90 : DASH.settings.rotateDays;
+    var d = added ? Math.floor((Date.now() - added) / 86400000) : 0;
+    return rd && d > rd ? h('span', { class: 'tag paidt', title: 'Older than your ' + rd + '-day reminder. Consider replacing it.' }, d + ' days old') : null;
+  }
   function keyBox(p, k) {
     var ck = k.check;
     var meters = [];
     if (k.rpm) meters.push(meter('Requests this minute', k.lastMin, k.rpm));
-    meters.push(meter('Requests today', k.today, k.rpd || 0, 'lime'));
+    meters.push(meter('Requests today', k.today, k.rpd || 0, ''));
     (k.rows || []).forEach(function (r) {
       var name = cap(r.what.replace(/-/g, ' ')) + ' left';
       var left = r.remaining != null ? r.remaining : null;
       var pct = r.limit && left != null ? Math.round((left / r.limit) * 100) : null;
       meters.push(h('div', null,
         h('div', { class: 'meter-lbl' }, h('span', null, name), h('span', null, h('b', null, left != null ? fmt(left) : '?'), r.limit ? ' of ' + fmt(r.limit) : '')),
-        pct != null ? h('div', { class: 'track ' + (left <= 0 ? 'red' : pct <= 20 ? '' : 'lime'), role: 'meter', 'aria-label': name, 'aria-valuenow': String(left), 'aria-valuemax': String(r.limit) }, h('i', { style: { width: pct + '%' } })) : null,
+        pct != null ? h('div', { class: 'track ' + (left <= 0 ? 'red' : pct <= 20 ? 'warn' : ''), role: 'meter', 'aria-label': name, 'aria-valuenow': String(left), 'aria-valuemax': String(r.limit) }, h('i', { style: { width: pct + '%' } })) : null,
         h('div', { class: 'hint', style: { marginTop: '6px' } }, 'Reported by provider' + (r.reset ? ', resets in ' + r.reset : ''))));
     });
     var ac = k.acct;
@@ -1320,6 +1415,7 @@
     return h('div', { class: 'keybox' },
       h('div', { class: 'kh' },
         h('span', { class: 'mono' }, k.mask), k.label ? h('span', { class: 'faint' }, k.label) : null,
+        keyAgeTag(k.added),
         h('div', { class: 'badges' },
           ck ? (ck.ok ? h('span', { class: 'pill ready' }, icon('check'), 'Key works') : h('span', { class: 'pill error', title: ck.error }, icon('x'), ck.error)) : null,
           k.blockedFor > 0 ? h('span', { class: 'pill limited', title: k.reason }, icon('clock'), 'Paused ' + dur(k.blockedFor)) : null,
@@ -1467,7 +1563,8 @@
             h('td', null, h('span', { class: 'tag ' + (m.credit ? 'credit' : m.free ? 'free' : 'paidt'), title: m.credit ? 'Paid model, free while the token allowance lasts' : null }, m.credit ? 'Credit' : m.free ? 'Free' : 'Paid')),
             h('td', null, m.cats.filter(function (x) { return x !== 'general'; }).map(function (x) { return h('span', { class: 'tag' }, x); })),
             h('td', { class: 'n' }, m.ctx ? fmt(m.ctx) : h('span', { class: 'faint' }, '-')),
-            h('td', { class: 'n' }, m.ok || m.fail ? h('span', null, fmt(m.ok), h('span', { class: 'faint' }, ' / ' + fmt(m.fail))) : h('span', { class: 'faint' }, '0')),
+            h('td', { class: 'n' }, m.ok || m.fail ? h('span', null, fmt(m.ok), h('span', { class: 'faint' }, ' / ' + fmt(m.fail))) : h('span', { class: 'faint' }, '0'),
+              m.lat ? h('div', { class: 'hint num', title: 'Typical time to start answering, from your own calls' }, fmtMs(m.lat)) : null),
             h('td', null, h('div', { class: 'row nowrap', style: { gap: '6px' } }, score, src, m.custom ? btn('Reset', function () { api('PUT', 'overrides', { key: key, score: null }).then(function (nc) { CAT = nc; draw(false); }, fail); }, 'sm soft') : null)),
             h('td', null, sw(!m.off, function (on) { api('PUT', 'overrides', { key: key, off: !on }).then(function (nc) { CAT = nc; toast(on ? 'Model on' : 'Model off: never used'); }, fail); }, 'Use ' + m.id)));
         }));
@@ -1477,14 +1574,14 @@
       var free = provs.map(function (n) { return [n, c.models.filter(function (m) { return m.provider === n && m.free; }).length]; }).filter(function (x) { return x[1]; });
       body.replaceChildren(
         h('div', { class: 'grid g2 kpi-row' },
-          kpi('lime', 'Free models', 'check', fmt(freeN), 'On ' + plural(free.length, 'provider')),
+          kpi('good', 'Free models', 'check', fmt(freeN), 'On ' + plural(free.length, 'provider')),
           kpi('', 'Paid models', 'cube', fmt(paidN), c.mode === 'free' ? 'Not used in Free only mode' : 'Used when routing allows')),
         h('div', { class: 'mt' + (first ? ' grow' : '') },
           h('section', { class: 'card' },
             h('div', { class: 'card-head' }, h('div', null, h('h3', null, 'Free models by provider'), h('div', { class: 'sub' }, 'Includes paid models covered by a free token allowance'))),
             free.length ? h('div', { class: 'share cols' }, free.sort(function (a, b) { return b[1] - a[1]; }).map(function (x) {
               return h('div', { class: 'share-row' }, h('div', { class: 'top-line' }, h('b', { class: 'with-logo' }, plogo(x[0], 'xs'), x[0]), h('span', { class: 'muted num' }, plural(x[1], 'model'))),
-                h('div', { class: 'track lime' }, h('i', { style: { width: Math.max(3, (x[1] / freeN) * 100) + '%' } })));
+                h('div', { class: 'track' }, h('i', { style: { width: Math.max(3, (x[1] / freeN) * 100) + '%' } })));
             })) : h('div', { class: 'empty' }, 'No free models yet. Connect a provider.'))),
         h('section', { class: 'card mt' },
           h('div', { class: 'card-head' }, h('div', null, h('h3', null, 'What "auto" picks right now'), h('div', { class: 'sub' }, 'Best first for each kind of task, in ' + MODE_LABEL[c.mode] + ' mode'))),
@@ -1506,7 +1603,7 @@
             sel([['all', 'All tasks']].concat(CFG.categories.map(function (x) { return [x, TASK_LABEL[x] || x]; })), filt.cat, function (v) { filt.cat = v; table(); }, { 'aria-label': 'Task' }),
             h('span', { class: 'sp' }), q),
           h('div', { class: 'tbl-wrap' }, h('table', null,
-            h('thead', null, h('tr', null, h('th', null, 'Model'), h('th', null, 'Price'), h('th', null, 'Good at'), h('th', { class: 'n' }, 'Context'), h('th', { class: 'n' }, 'Worked / failed'), h('th', null, 'Score'), h('th', null, 'Use'))),
+            h('thead', null, h('tr', null, h('th', null, 'Model'), h('th', null, 'Price'), h('th', null, 'Good at'), h('th', { class: 'n' }, 'Context'), h('th', { class: 'n' }, 'Worked / failed', h('div', { class: 'th-sub' }, 'and speed')), h('th', null, 'Score'), h('th', null, 'Use'))),
             tbody))));
     }
     function benchBar(c) {
@@ -1557,7 +1654,9 @@
           h('div', { class: 'card-head' }, h('div', null, h('h3', null, 'Per day'), h('div', { class: 'sub' }, 'Last 14 days')),
             seg([['tokens', 'Tokens'], ['req', 'Requests']], metric, function (v) { metric = v; chart(true); }, 'Metric')),
           chartBox,
-          est ? h('div', { class: 'hint', style: { marginTop: '14px' } }, plural(est, 'reply') + ' had no token count from the provider, so those are estimated at about 4 characters per token.') : null),
+          est ? h('div', { class: 'hint', style: { marginTop: '14px' } }, plural(est, 'reply') + ' had no token count from the provider, so those are estimated at about 4 characters per token.') : null,
+          d.cache && (d.cache.week || (d.settings && d.settings.cacheSecs)) ? h('div', { class: 'hint', style: { marginTop: '8px' } }, 'Answered from memory: ' + plural(d.cache.today, 'request') + ' today, ' + fmt(d.cache.week) + ' this week.') : null),
+        healthCard(d),
         h('div', { class: 'grid g2 mt' },
           tableCard('Providers', 'Last 7 days', ['Provider', 'In', 'Out', 'Requests'], d.byProvider.map(function (r) { return [cap(r.name), fmt(r.p), fmt(r.c), fmt(r.req)]; })),
           tableCard('Agent keys', 'Last 7 days', ['Key', 'Tokens', 'Today', 'Requests'], keysRows.map(function (r) { return [r.label, fmt(tok(r.u)), r.today ? fmt(tok(r.today)) : '-', fmt(r.u.req)]; }))),
@@ -1565,6 +1664,39 @@
     }
     draw(true);
     poll(draw);
+  }
+  // Provider health: one cell per day, colored by how many calls worked. Rate limits are not failures.
+  function healthTone(x) {
+    if (!x || !(x.ok + x.fail)) return 'none';
+    var r = x.ok / (x.ok + x.fail);
+    return r >= 0.98 ? 'good' : r >= 0.8 ? 'warn' : 'bad';
+  }
+  function fmtMs(ms) { return ms == null ? '-' : ms < 1000 ? Math.round(ms) + ' ms' : (ms / 1000).toFixed(ms < 10000 ? 1 : 0) + ' s'; }
+  function healthCard(d) {
+    var rows = d.providers.filter(function (p) { return p.keys.length && p.history && p.history.some(function (x) { return x; }); });
+    if (!rows.length) return null;
+    var days = d.days || [];
+    var TONE_TXT = { good: '98% or more worked', warn: '80 to 98% worked', bad: 'under 80% worked', none: 'no calls' };
+    return h('section', { class: 'card mt' },
+      h('div', { class: 'card-head' }, h('div', null, h('h3', null, 'Provider health'), h('div', { class: 'sub' }, 'Last 14 days. Rate limits do not count as failures.'))),
+      h('div', { class: 'tbl-wrap' }, h('table', { class: 'health' },
+        h('thead', null, h('tr', null, h('th', null, 'Provider'), h('th', null, 'Each day'), h('th', { class: 'n' }, 'Worked'), h('th', { class: 'n' }, 'Answer time'), h('th', { class: 'n' }, 'Calls'))),
+        h('tbody', null, rows.map(function (p) {
+          var ok = 0, bad = 0, lim = 0, ms = 0, msN = 0;
+          p.history.forEach(function (x) { if (!x) return; ok += x.ok; bad += x.fail; lim += x.lim; if (x.ms != null) { ms += x.ms * (x.ok || 1); msN += x.ok || 1; } });
+          var pct = ok + bad ? Math.round((ok / (ok + bad)) * 1000) / 10 : null;
+          return h('tr', null,
+            h('td', { class: 'name' }, h('div', { class: 'row nowrap', style: { gap: '10px' } }, plogo(p.name, 'sm', p.baseUrl), h('span', { style: { fontWeight: '700' } }, cap(p.name)))),
+            h('td', null, h('div', { class: 'hstrip', role: 'img', 'aria-label': cap(p.name) + ' health by day' }, p.history.map(function (x, i) {
+              var t = healthTone(x);
+              var tip = (days[i] || '') + ': ' + (x ? fmt(x.ok) + ' worked, ' + fmt(x.fail) + ' failed' + (x.lim ? ', ' + fmt(x.lim) + ' rate limited' : '') + (x.ms != null ? ', ' + fmtMs(x.ms) + ' to answer' : '') : 'no calls');
+              return h('span', { class: 'hcell ' + t, title: tip });
+            }))),
+            h('td', { class: 'n num' }, pct == null ? '-' : h('span', { class: 'hpct ' + healthTone({ ok: ok, fail: bad }) }, pct + '%')),
+            h('td', { class: 'n num' }, fmtMs(msN ? ms / msN : null)),
+            h('td', { class: 'n num' }, fmt(ok + bad + lim)));
+        })))),
+      h('div', { class: 'hlegend' }, ['good', 'warn', 'bad', 'none'].map(function (t) { return h('span', null, h('i', { class: 'hcell ' + t }), TONE_TXT[t]); })));
   }
   function usageTile(tone, label, u, first) {
     var big = h('div', { class: 'big' });
@@ -1587,14 +1719,16 @@
     main.append(header('Agent keys', 'Give each agent its own key. Provider keys never leave Cloudflare.'), body);
     var label = h('input', { type: 'text', name: 'agent', placeholder: 'e.g. my-agent', autocomplete: 'off' });
     var capIn = numIn('', { name: 'cap', placeholder: 'No limit' });
+    var tokCapIn = numIn('', { name: 'tokcap', placeholder: 'No limit' });
     var allowPaid = false;
     var paidNote = h('div', { class: 'hint' }, 'Off: free models only.');
     var reveal = h('div');
     var createB = btn('Create key', function () {
-      busy(createB, 'Creating', api('POST', 'router-keys', { label: label.value.trim() || 'agent', dailyCap: capIn.num, mode: allowPaid ? 'mixed' : 'free' })).then(function (r) {
+      busy(createB, 'Creating', api('POST', 'router-keys', { label: label.value.trim() || 'agent', dailyCap: capIn.num, tokenCap: tokCapIn.num, mode: allowPaid ? 'mixed' : 'free' })).then(function (r) {
         CFG = r.config;
         label.value = '';
         capIn.value = '';
+        tokCapIn.value = '';
         reveal.replaceChildren(h('div', { class: 'reveal mt' },
           h('b', null, 'Copy this key now. It is shown only once.'),
           h('code', null, r.key),
@@ -1608,16 +1742,22 @@
       listBox.replaceChildren(ks.length ? h('section', { class: 'card mt' },
         h('div', { class: 'card-head' }, h('h3', null, 'Your agent keys'), h('span', { class: 'chip' }, String(ks.length))),
         h('div', { class: 'tbl-wrap' }, h('table', null,
-          h('thead', null, h('tr', null, h('th', null, 'Agent'), h('th', null, 'Models'), h('th', null, 'Task'), h('th', null, 'Today'), h('th', null, 'Daily limit'), h('th', null, 'On'), h('th'))),
+          h('thead', null, h('tr', null, h('th', null, 'Agent'), h('th', null, 'Models'), h('th', null, 'Task'), h('th', null, 'Today'), h('th', null, 'Requests a day'), h('th', null, 'Tokens a day'), h('th', null, 'On'), h('th'))),
           h('tbody', null, ks.map(function (k) {
             var capBox = numIn(k.dailyCap || '', { placeholder: 'None', 'aria-label': 'Daily limit for ' + k.label });
             capBox.addEventListener('change', function () { act(api('PATCH', 'router-keys/' + k.id, { dailyCap: capBox.num }), 'Limit saved'); });
+            var tokBox = numIn(k.tokenCap || '', { placeholder: 'None', 'aria-label': 'Daily token budget for ' + k.label });
+            tokBox.addEventListener('change', function () { act(api('PATCH', 'router-keys/' + k.id, { tokenCap: tokBox.num }), 'Budget saved'); });
+            var rd = DASH.settings.rotateDays == null ? 90 : DASH.settings.rotateDays;
+            var oldDays = k.created ? Math.floor((Date.now() - k.created) / 86400000) : 0;
             return h('tr', null,
-              h('td', { class: 'name' }, h('div', { style: { fontWeight: '700' } }, k.label), h('div', { class: 'hint' }, 'Created ' + ago(k.created))),
+              h('td', { class: 'name' }, h('div', { style: { fontWeight: '700' } }, k.label), h('div', { class: 'hint' }, 'Created ' + ago(k.created)),
+                rd && oldDays > rd ? h('span', { class: 'tag paidt', title: 'Older than your ' + rd + '-day reminder. Create a new key and delete this one.' }, oldDays + ' days old') : null),
               h('td', null, sel([['free', 'Free only'], ['mixed', 'Free + paid'], ['best', 'Strongest first'], ['inherit', 'Follow settings']], k.mode, function (v) { act(api('PATCH', 'router-keys/' + k.id, { mode: v }), 'Saved'); }, { 'aria-label': 'Models for ' + k.label })),
               h('td', null, sel(Object.keys(TASK_LABEL).map(function (x) { return [x, TASK_LABEL[x]]; }), k.task, function (v) { act(api('PATCH', 'router-keys/' + k.id, { task: v }), 'Saved'); }, { 'aria-label': 'Task for ' + k.label })),
-              h('td', { style: { minWidth: '172px' } }, meter('Requests', k.today, k.dailyCap), h('div', { class: 'hint num', style: { marginTop: '5px' } }, fmt(tok(k.tokensToday)) + ' tokens')),
+              h('td', { style: { minWidth: '172px' } }, meter('Requests', k.today, k.dailyCap), k.tokenCap ? h('div', { style: { marginTop: '8px' } }, meter('Tokens', tok(k.tokensToday), k.tokenCap)) : h('div', { class: 'hint num', style: { marginTop: '5px' } }, fmt(tok(k.tokensToday)) + ' tokens')),
               h('td', null, capBox),
+              h('td', null, tokBox),
               h('td', null, sw(k.enabled, function (on) { act(api('PATCH', 'router-keys/' + k.id, { enabled: on }), on ? 'Key on' : 'Key off'); }, 'Key ' + k.label + ' on')),
               h('td', null, iconBtn('trash', 'Delete key ' + k.label, function () {
                 ask({ title: 'Delete "' + k.label + '"?', text: 'Agents using this key stop working straight away. This cannot be undone.', ok: 'Delete key', danger: true }).then(function (yes) {
@@ -1632,7 +1772,7 @@
         h('section', { class: 'card' },
           h('div', { class: 'card-head' }, h('div', null, h('h3', null, 'Create a key'), h('div', { class: 'sub' }, 'One key per agent, so you can see and limit each one.'))),
           h('div', { class: 'stack', style: { gap: '16px' } },
-            h('div', { class: 'form-grid halves' }, field('Agent name', label), field('Daily request limit', capIn, 'Leave empty for no limit.')),
+            h('div', { class: 'form-grid' }, field('Agent name', label), field('Requests a day', capIn, 'Empty: no limit.'), field('Tokens a day', tokCapIn, 'Empty: no limit. 500k works too.')),
             h('div', { class: 'paidbox' },
               sw(false, function (on) { allowPaid = on; paidNote.textContent = on ? 'On: free first, paid only when every free model is busy.' : 'Off: free models only.'; }, 'Allow paid models'),
               h('div', null, h('div', { style: { fontWeight: '700' } }, 'Allow paid models'), paidNote)),
@@ -1642,9 +1782,9 @@
           h('div', { class: 'lbl' }, 'Connect an agent', h('span', { class: 'ic' }, icon('key'))),
           h('div', { class: 'stack', style: { marginTop: '8px', gap: '8px' } },
             h('div', { class: 'foot' }, 'Base URL'),
-            h('div', { class: 'row nowrap' }, h('code', { class: 'mono', style: { color: 'var(--lime)', wordBreak: 'break-all', flex: '1' } }, base), iconBtn('copy', 'Copy base URL', function () { copy(base, 'Base URL copied'); }, 'sm soft')),
+            h('div', { class: 'row nowrap' }, h('code', { class: 'mono', style: { color: 'var(--accent)', wordBreak: 'break-all', flex: '1' } }, base), iconBtn('copy', 'Copy base URL', function () { copy(base, 'Base URL copied'); }, 'sm soft')),
             h('div', { class: 'foot', style: { marginTop: '6px' } }, 'Model'),
-            h('code', { class: 'mono', style: { color: 'var(--lime)' } }, 'auto'),
+            h('code', { class: 'mono', style: { color: 'var(--accent)' } }, 'auto'),
             h('div', { class: 'foot', style: { marginTop: '6px' } }, 'Or a task name: coding, reasoning, vision, long-context. Add :free, :mixed or :best to force a mode.')))),
       listBox);
   }
@@ -1667,7 +1807,7 @@
             r.model ? h('span', { class: 'chip mono' }, r.model) : null,
             r.task ? h('span', { class: 'chip' }, TASK_LABEL[r.task] || r.task) : null,
             r.mode ? h('span', { class: 'chip' }, MODE_LABEL[r.mode]) : null,
-            r.paid ? h('span', { class: 'chip', style: { background: 'var(--orange-soft)', color: 'var(--orange-ink)' } }, 'Paid') : null,
+            r.paid ? h('span', { class: 'chip', style: { background: 'var(--warn-soft)', color: 'var(--warn-ink)' } }, 'Paid') : null,
             h('span', { class: 'sp' }), h('span', { class: 'faint num' }, fmt(r.ms) + ' ms · ' + plural(Number(r.attempts) || 0, 'attempt'))),
           h('div', { class: 'out' }, text)));
         api('GET', 'dashboard').then(function (d) { DASH = d; });
@@ -1682,14 +1822,18 @@
   // ---------- settings ----------
   function viewSettings(main) {
     var body = page(true);
-    main.append(header('Settings', 'How the router picks models. Applies to every agent key set to "Follow settings".'), body);
+    main.append(header('Settings', 'How the router picks models, keeps itself healthy and tells you when something needs you.'), body);
     var S = CFG.settings;
     var mode = S.mode;
+    var fast = S.fastFirst !== false;
     var hint = h('div', { class: 'hint' }, MODE_HINT[mode]);
     var capIn = numIn(S.paidDailyCap || '', { placeholder: 'No limit', 'aria-label': 'Paid requests per day' });
     var att = h('input', { type: 'number', min: '1', max: '50', value: String(S.maxAttempts) });
     var waitIn = h('input', { type: 'number', min: '0', max: '60', value: String(S.waitSecs == null ? 20 : S.waitSecs) });
     var to = h('input', { type: 'number', min: '5', max: '300', value: String(Math.round(S.timeoutMs / 1000)) });
+    var cacheIn = h('input', { type: 'number', min: '0', max: '3600', value: String(S.cacheSecs || 0) });
+    var offIn = h('input', { type: 'number', min: '0', max: '60', value: String(S.autoOffDays == null ? 3 : S.autoOffDays) });
+    var rotIn = h('input', { type: 'number', min: '0', max: '730', value: String(S.rotateDays == null ? 90 : S.rotateDays) });
     var ta = h('textarea', { rows: '12', spellcheck: 'false', 'aria-label': 'Custom routes JSON' }, JSON.stringify(CFG.routes, null, 2));
     var errBox = h('div', { class: 'err', style: { fontSize: '14px' } });
     var routesAcc = accordion('Edit custom routes (JSON)', h('div', { class: 'stack' },
@@ -1703,22 +1847,175 @@
           act(api('PUT', 'routes', { routes: routes }), 'Routes saved').then(function () { ta.value = JSON.stringify(CFG.routes, null, 2); }, function (e) { errBox.textContent = e.message; });
         }, 'sm'),
         btn('Undo changes', function () { ta.value = JSON.stringify(CFG.routes, null, 2); errBox.textContent = ''; }, 'soft sm'))));
+    function head(title, sub, ic) {
+      return h('div', { class: 'card-head' }, h('div', null, h('h3', null, title), h('div', { class: 'sub' }, sub)), ic ? h('span', { class: 'set-ic' }, icon(ic)) : null);
+    }
+    function toggleRow(on, label, text, onchange) {
+      return h('div', { class: 'paidbox' }, sw(on, onchange, label), h('div', null, h('div', { style: { fontWeight: '700' } }, label), h('div', { class: 'hint' }, text)));
+    }
     body.append(
       h('section', { class: 'card' },
-        h('div', { class: 'card-head' }, h('div', null, h('h3', null, 'Routing'), h('div', { class: 'sub' }, 'Which models "auto" may use'))),
+        head('Routing', 'Which models "auto" may use and how hard it tries'),
         h('div', { class: 'stack', style: { gap: '18px' } },
           h('div', { class: 'stack', style: { gap: '8px' } }, seg([['free', 'Free only'], ['mixed', 'Free first, then paid'], ['best', 'Strongest first']], mode, function (v) { mode = v; hint.textContent = MODE_HINT[v]; }, 'Routing mode'), hint),
+          toggleRow(fast, 'Prefer faster models', 'Among models that score about the same, the one that answers sooner goes first. Speed is measured on your own calls.', function (on) { fast = on; }),
           h('div', { class: 'form-grid' },
             field('Paid requests per day', capIn, 'Empty means no limit. Paid today: ' + fmt(DASH.paidToday) + '.'),
             field('Models to try per request', att),
             field('Timeout per try (seconds)', to),
-            field('Wait for a free slot (seconds)', waitIn, 'When every model is briefly rate limited, hold the call this long instead of failing. 0 turns it off.')),
+            field('Wait for a free slot (seconds)', waitIn, 'When every model is briefly rate limited, hold the call this long instead of failing. 0 turns it off.'),
+            field('Reuse identical answers (seconds)', cacheIn, 'The same request from the same agent key within this time gets the same answer, without calling a provider. 0 turns it off.')),
           h('div', null, btn('Save settings', function () {
-            act(api('PUT', 'settings', { mode: mode, paidDailyCap: capIn.num, maxAttempts: Number(att.value), timeoutMs: Number(to.value) * 1000, waitSecs: waitIn.value.trim() === '' ? undefined : Number(waitIn.value) }), 'Settings saved').then(render, function () {});
+            act(api('PUT', 'settings', { mode: mode, fastFirst: fast, paidDailyCap: capIn.num, maxAttempts: Number(att.value), timeoutMs: Number(to.value) * 1000, waitSecs: waitIn.value.trim() === '' ? undefined : Number(waitIn.value), cacheSecs: Number(cacheIn.value) || 0 }), 'Settings saved').then(render, function () {});
           }, 'orange')))),
+      h('div', { class: 'grid g2 mt' }, appearanceCard(head), upkeepCard(head, offIn, rotIn)),
+      alertsCard(head),
+      backupCard(head),
       h('section', { class: 'card mt' },
         h('div', { class: 'card-head', style: { marginBottom: '8px' } }, h('div', null, h('h3', null, 'Custom routes'), h('div', { class: 'sub' }, 'Optional. Smart names like auto and coding need none.'))),
         routesAcc.button, routesAcc.box));
+  }
+
+  // Accent color: a few presets, any color from the wheel, or a hex code. Saved for every browser you use.
+  function appearanceCard(head) {
+    var saved = ACCENT;
+    var hexIn = h('input', { type: 'text', value: ACCENT, maxlength: '7', spellcheck: 'false', autocomplete: 'off', 'aria-label': 'Accent hex code', class: 'mono hexin' });
+    var wheel = h('input', { type: 'color', value: ACCENT, 'aria-label': 'Pick any color', class: 'wheel' });
+    var preview = h('div', { class: 'acc-preview' },
+      h('span', { class: 'btn orange sm', 'aria-hidden': 'true' }, 'Button'),
+      h('span', { class: 'tag new', 'aria-hidden': 'true' }, 'New'),
+      h('span', { class: 'switch', 'aria-hidden': 'true' }, h('input', { type: 'checkbox', checked: true, tabindex: '-1', disabled: true }), h('span')),
+      h('span', { class: 'acc-link' }, 'Link text'));
+    var sw8 = h('div', { class: 'swatches', role: 'radiogroup', 'aria-label': 'Accent presets' });
+    function mark() {
+      sw8.querySelectorAll('button').forEach(function (b) { var on = b.dataset.hex === ACCENT; b.classList.toggle('on', on); b.setAttribute('aria-checked', String(on)); });
+      hexIn.value = ACCENT;
+      wheel.value = ACCENT;
+    }
+    function save(hex) {
+      if (!/^#[0-9a-f]{6}$/i.test(hex)) { toast('Use a hex code like #ff6a13', true); hexIn.value = ACCENT; return; }
+      applyAccent(hex);
+      mark();
+      if (hex.toLowerCase() === saved) return;
+      act(api('PUT', 'settings', { accent: hex.toLowerCase() }), 'Color saved').then(function () { saved = ACCENT; }, function () {});
+    }
+    ACCENTS.forEach(function (a) {
+      sw8.append(h('button', { type: 'button', role: 'radio', class: 'swatch', 'data-hex': a[0], 'aria-label': a[1], title: a[1], style: { background: a[0] }, onclick: function () { save(a[0]); } }, icon('check')));
+    });
+    wheel.addEventListener('input', function () { applyAccent(wheel.value, false); hexIn.value = wheel.value; sw8.querySelectorAll('button').forEach(function (b) { b.classList.remove('on'); }); });
+    wheel.addEventListener('change', function () { save(wheel.value); });
+    hexIn.addEventListener('keydown', function (e) { if (e.key === 'Enter') save(hexIn.value.trim().replace(/^([^#])/, '#$1')); });
+    hexIn.addEventListener('blur', function () { var v = hexIn.value.trim().replace(/^([^#])/, '#$1'); if (v.toLowerCase() !== ACCENT) save(v); });
+    mark();
+    return h('section', { class: 'card' },
+      head('Appearance', 'One accent color for buttons, highlights and charts', 'palette'),
+      h('div', { class: 'stack', style: { gap: '16px' } },
+        sw8,
+        h('div', { class: 'row nowrap', style: { gap: '10px' } },
+          h('label', { class: 'wheel-wrap', title: 'Pick any color' }, wheel, h('span', null, 'Color wheel')),
+          hexIn,
+          btn('Reset', function () { save(ACCENT_DEFAULT); }, 'soft sm')),
+        preview,
+        h('div', { class: 'hint' }, 'Text on the accent switches between white and dark so it stays readable. Status colors (green ready, amber warning, red error) do not change.')));
+  }
+
+  function upkeepCard(head, offIn, rotIn) {
+    return h('section', { class: 'card' },
+      head('Upkeep', 'Failing providers and old keys', 'shield'),
+      h('div', { class: 'stack', style: { gap: '16px' } },
+        h('div', { class: 'form-grid halves' },
+          field('Pause failing providers after (days)', offIn, 'When every key of a provider fails this long, it is paused and checked once a day. 0 never pauses.'),
+          field('Remind to replace keys after (days)', rotIn, 'Keys older than this get a note on their card and an alert. 0 turns it off.')),
+        h('div', null, btn('Save upkeep', function () {
+          act(api('PUT', 'settings', { autoOffDays: Number(offIn.value) || 0, rotateDays: Number(rotIn.value) || 0 }), 'Saved').then(render, function () {});
+        }, 'sm'))));
+  }
+
+  var ALERT_EVENTS = [['errors', 'Provider errors', 'A provider starts failing or runs out of credit'], ['paused', 'Paused or back on', 'A provider is paused automatically, or works again'], ['limits', 'Limit changes', 'A directory or website changed a provider’s limits'], ['budget', 'Agent budgets', 'An agent key reached its daily limit'], ['keys', 'Old keys', 'A key is older than your reminder']];
+  function alertsCard(head) {
+    var A = DASH.alerts || { events: {} };
+    var tokIn = h('input', { type: 'password', autocomplete: 'off', spellcheck: 'false', placeholder: A.telegram ? 'Saved (' + A.telegram.token + '). Paste a new one to replace' : '123456789:AA...', 'aria-label': 'Telegram bot token' });
+    var chatIn = h('input', { type: 'text', autocomplete: 'off', spellcheck: 'false', value: A.telegram ? A.telegram.chat : '', placeholder: '123456789', 'aria-label': 'Telegram chat ID' });
+    var hookIn = h('input', { type: 'url', autocomplete: 'off', spellcheck: 'false', placeholder: A.webhook || 'https://...', 'aria-label': 'Webhook URL' });
+    var ev = Object.assign({}, A.events);
+    var state = h('div', { class: 'row', style: { gap: '8px' } });
+    function showState() {
+      state.replaceChildren(
+        A.telegram ? pill('ready', 'Telegram on') : pill('off', 'Telegram off'),
+        A.webhook ? pill('ready', 'Webhook on') : pill('off', 'Webhook off'));
+    }
+    showState();
+    var saveB = btn('Save alerts', function () {
+      var b = { events: ev };
+      var tk = tokIn.value.trim();
+      var chat = chatIn.value.trim();
+      if (tk && !chat) { toast('Add your chat ID too', true); return; }
+      if (!tk && chat && !A.telegram) { toast('Add the bot token too', true); return; }
+      if (tk) { b.telegramToken = tk; b.telegramChat = chat; }
+      else if (A.telegram && chat && chat !== A.telegram.chat) b.telegramChat = chat;
+      if (hookIn.value.trim()) b.webhook = hookIn.value.trim();
+      busy(saveB, 'Saving', api('PUT', 'alerts', b)).then(function (r) { A = r; DASH.alerts = r; tokIn.value = ''; hookIn.value = ''; hookIn.placeholder = r.webhook || 'https://...'; tokIn.placeholder = r.telegram ? 'Saved (' + r.telegram.token + '). Paste a new one to replace' : '123456789:AA...'; showState(); toast('Alerts saved'); }, fail);
+    }, 'orange sm');
+    var testB = btn('Send a test', function () { busy(testB, 'Sending', api('POST', 'alerts/test', {})).then(function () { toast('Test sent'); }, fail); }, 'soft sm', 'bell');
+    function off(what, b) {
+      ask({ title: 'Turn off ' + what + ' alerts?', text: what === 'Telegram' ? 'The saved bot token is deleted.' : 'The saved webhook address is deleted.', ok: 'Turn off', danger: true }).then(function (yes) {
+        if (!yes) return;
+        api('PUT', 'alerts', b).then(function (r) { A = r; DASH.alerts = r; chatIn.value = r.telegram ? r.telegram.chat : ''; hookIn.placeholder = 'https://...'; showState(); toast(what + ' alerts off'); }, fail);
+      });
+    }
+    return h('section', { class: 'card mt' },
+      head('Alerts', 'A message when something needs you. Key values are never sent, only their last characters.', 'bell'),
+      h('div', { class: 'stack', style: { gap: '18px' } },
+        state,
+        h('div', { class: 'form-grid' },
+          field('Telegram bot token', tokIn, 'Create a bot with @BotFather and paste its token. Stored on your server, never shown again.'),
+          field('Telegram chat ID', chatIn, 'Send your bot a message first. Your ID comes from @userinfobot; a group ID starts with -100.'),
+          field('Webhook (optional)', hookIn, 'Any https address. Gets JSON: { event, text, at }. Works with Slack, Discord or ntfy relays.')),
+        h('div', { class: 'alert-evs' }, ALERT_EVENTS.map(function (e) {
+          return h('div', { class: 'paidbox' }, sw(ev[e[0]] !== false, function (on) { ev[e[0]] = on; }, e[1]), h('div', null, h('div', { style: { fontWeight: '700' } }, e[1]), h('div', { class: 'hint' }, e[2])));
+        })),
+        h('div', { class: 'row' }, saveB, testB, h('span', { class: 'sp' }),
+          A.telegram ? btn('Turn off Telegram', function () { off('Telegram', { telegramToken: '', telegramChat: '' }); }, 'soft sm') : null,
+          A.webhook ? btn('Remove webhook', function () { off('webhook', { webhook: '' }); }, 'soft sm') : null)));
+  }
+
+  function backupCard(head) {
+    var file = h('input', { type: 'file', accept: 'application/json,.json', class: 'hide', 'aria-label': 'Backup file' });
+    file.addEventListener('change', function () {
+      var f = file.files && file.files[0];
+      if (!f) return;
+      var rd = new FileReader();
+      rd.onload = function () {
+        var data;
+        try { data = JSON.parse(rd.result); } catch (e) { toast('That file is not JSON', true); return; }
+        var n = data && data.providers ? Object.keys(data.providers).length : 0;
+        ask({ title: 'Restore this backup?', text: plural(n, 'provider') + ', routes, settings and agent keys are merged in. Nothing is deleted, and providers you already have keep their keys. New providers still need a key.', ok: 'Restore' }).then(function (yes) {
+          if (!yes) return;
+          api('POST', 'restore', { backup: data }).then(function (r) {
+            CFG = r.config;
+            toast('Restored ' + plural(r.counts.providers, 'provider') + ', ' + plural(r.counts.agentKeys, 'agent key'));
+            loadAll().then(render);
+          }, fail);
+        });
+        file.value = '';
+      };
+      rd.readAsText(f);
+    });
+    var dlB = btn('Download backup', function () {
+      busy(dlB, 'Preparing', api('GET', 'backup')).then(function (b) {
+        var url = URL.createObjectURL(new Blob([JSON.stringify(b, null, 2)], { type: 'application/json' }));
+        var a = h('a', { href: url, download: 'keyrouter-backup-' + new Date().toISOString().slice(0, 10) + '.json' });
+        document.body.append(a);
+        a.click();
+        a.remove();
+        setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+      }, fail);
+    }, 'sm', 'download');
+    return h('section', { class: 'card mt' },
+      head('Backup', 'Move your setup to another deployment, or keep a copy', 'download'),
+      h('div', { class: 'stack', style: { gap: '14px' } },
+        h('div', { class: 'hint' }, 'The file has providers, limits, routes, settings, score overrides and agent keys (as hashes, so agents keep working). Provider keys and alert tokens are left out: add those again after a restore.'),
+        h('div', { class: 'row' }, dlB, btn('Restore from file', function () { file.click(); }, 'soft sm', 'upload'), file)));
   }
 
   window.addEventListener('hashchange', function () {
